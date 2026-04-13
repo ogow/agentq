@@ -23,6 +23,7 @@ export interface RunMetadata {
     model: string;
     provider: string;
     reasoning: string;
+    resultMode: string;
     sandbox: string;
     timeout: string;
     timeoutMs: number;
@@ -67,6 +68,7 @@ export function buildStartedMetadata(
       model: prepared.config.model,
       provider: prepared.config.provider,
       reasoning: prepared.config.reasoning,
+      resultMode: prepared.config.resultMode,
       sandbox: prepared.config.sandbox,
       timeout: prepared.config.timeout,
       timeoutMs: prepared.config.timeoutMs,

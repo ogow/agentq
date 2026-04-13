@@ -12,6 +12,7 @@ import type {
   ApprovalPolicy,
   ProviderId,
   ReasoningEffort,
+  ResultMode,
   SandboxMode,
 } from './core/types';
 
@@ -52,6 +53,11 @@ async function main(): Promise<void> {
               'xhigh',
             ] as const,
             describe: 'Reasoning effort for the run',
+            type: 'string',
+          })
+          .option('result-mode', {
+            choices: ['plain', 'json'] as const,
+            describe: 'Final output contract for the run',
             type: 'string',
           })
           .option('timeout', {
@@ -106,6 +112,7 @@ async function main(): Promise<void> {
             model: argv.model,
             provider: argv.provider as ProviderId | undefined,
             reasoning: argv.reasoning as ReasoningEffort | undefined,
+            resultMode: argv.resultMode as ResultMode | undefined,
             sandbox: argv.sandbox as SandboxMode | undefined,
             timeout: argv.timeout,
           },

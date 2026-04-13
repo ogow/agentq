@@ -26,8 +26,8 @@ Agent definitions should be authored as readable Markdown documents, closer to a
 Use XML-like tags only as important anchors, not as the whole document format. The tags should make critical boundaries easy for both the runner and the model to find, especially:
 
 - `<instructions>` for must-follow behavior
-- `<task>` for the exact task injected by the CLI
-- `<artifacts>` for expected output locations and files
+- `<task>` for the exact task injected by the CLI; authored templates should use `{{task}}` as the placeholder
+- `<artifacts>` for expected output locations and files; authored templates should use `{{artifacts}}` as the run artifact directory placeholder
 - optional sections like `<context>`, `<verification>`, or `<handoff>` when useful
 
 This is inspired by Claude-style agent authoring: YAML frontmatter plus a Markdown system prompt, with XML tags used to structure important prompt sections. The local CLI should be stricter than generic agent authoring by requiring stable anchors such as `<task>` and `<artifacts>` so runs are repeatable and inspectable.
@@ -53,6 +53,7 @@ I need to be able to choose:
 - provider for the run
 - model for the run
 - reasoning effort for the run, using `none` when the selected model does not support reasoning
+- result mode for the final output, either `plain` for humans or `json` for harnesses
 - max runtime, such as `100ms`, `1m`, or `1h`
 - which file Codex should use as the project instruction/context file
 - sandbox settings for the run
@@ -67,7 +68,7 @@ Choosing an instruction/context file should make Codex aware of the file through
 
 The normal path should use Codex project instruction discovery, especially `project_doc_fallback_filenames`, so non-`AGENTS.md` files can be treated as project instruction files. `model_instructions_file` exists, but it replaces Codex's built-in model instructions and should be treated as an advanced/risky escape hatch, not the default way to provide project context.
 
-For v1, keep agent runtime config directly in the agent file's YAML frontmatter instead of adding run profiles. Each agent should be self-contained enough to understand and run by opening one file. Frontmatter must explicitly include `id`, `description`, `provider`, `model`, `reasoning`, `timeout`, and `sandbox`. Optional settings can include `approval` and `env`.
+For v1, keep agent runtime config directly in the agent file's YAML frontmatter instead of adding run profiles. Each agent should be self-contained enough to understand and run by opening one file. Frontmatter must explicitly include `id`, `description`, `provider`, `model`, `reasoning`, `result_mode`, `timeout`, and `sandbox`. Optional settings can include `approval` and `env`.
 
 Use AgentQ config for the file Codex should treat as project instruction/context for runs. This is a tool/project setting, not an agent setting. Store it as `context_file` in `.agentq/config.json` or `~/.agentq/config.json`; internally the wrapper can map it to Codex's project instruction discovery settings.
 
@@ -107,12 +108,12 @@ V1 implementation scope:
 - implement Codex as the first provider adapter behind a provider interface.
 - use Bun-compatible Node subprocess APIs with argv arrays to run `codex`; do not build shell-string commands.
 - support `agentq run <agent> --task <task>` as the primary command.
-- keep common run controls as flags on `agentq run`: `--task`, `--provider`, `--model`, `--reasoning`, `--timeout`, `--sandbox`, `--approval`, `--context-file`, and `--verbose`.
+- keep common run controls as flags on `agentq run`: `--task`, `--provider`, `--model`, `--reasoning`, `--result-mode`, `--timeout`, `--sandbox`, `--approval`, `--context-file`, and `--verbose`.
 - optionally support `agentq agents list` if useful while building, without adding deeper command levels.
 - resolve agents from project-local `.agentq/agents/<id>.md` first, then global `~/.agentq/agents/<id>.md`.
 - parse YAML frontmatter plus Markdown body.
-- require at least `id`, `description`, `provider`, `model`, `reasoning`, `sandbox`, `timeout`, `<task>`, and `<artifacts>` in an agent run.
-- allow CLI flags to override frontmatter for settings like `provider`, `model`, `reasoning`, `timeout`, `sandbox`, and `approval`; allow `--context-file` to override AgentQ config.
+- require at least `id`, `description`, `provider`, `model`, `reasoning`, `result_mode`, `sandbox`, `timeout`, `<task>`, and `<artifacts>` in an agent run.
+- allow CLI flags to override frontmatter for settings like `provider`, `model`, `reasoning`, `result_mode`, `timeout`, `sandbox`, and `approval`; allow `--context-file` to override AgentQ config.
 - write each run to `~/.agentq/runs/<agent-id>-<short-id>/`.
 - store `run.json`, `stdout.jsonl`, `stderr.log`, and `output.md`; keep source agent and context paths in `run.json` instead of copying those files into every run.
 - expose an `artifacts/` directory path to the agent for any additional files requested by the `<artifacts>` contract.

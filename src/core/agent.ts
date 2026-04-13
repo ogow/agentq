@@ -7,6 +7,7 @@ import type {
   AgentQConfig,
   AgentFrontmatter,
   EffectiveRunConfig,
+  ResultMode,
   ResolvedAgent,
   RunOverrides,
 } from './types';
@@ -31,6 +32,8 @@ const REASONING_EFFORTS = [
   'high',
   'xhigh',
 ] as const;
+const RESULT_MODES = ['plain', 'json'] as const;
+const ARTIFACTS_PLACEHOLDER = '{{artifacts}}';
 
 export async function readAgentFile(
   filePath: string,
@@ -55,6 +58,7 @@ export function renderAgentPrompt(
   agent: ResolvedAgent,
   task: string,
   artifactsDirPath?: string,
+  resultMode?: ResultMode,
 ): string {
   const trimmedTask = task.trim();
   assertAgentQ(trimmedTask.length > 0, 'Task must not be empty.');
@@ -65,16 +69,50 @@ export function renderAgentPrompt(
     return withTask;
   }
 
-  const artifactInstructions = [
+  const artifactInstructions = renderArtifactsInstructions(
     extractAgentArtifacts(withTask),
-    '',
-    'AgentQ artifact directory:',
     artifactsDirPath,
-    '',
-    'If you create additional files for this run, write them under the AgentQ artifact directory. Do not create files there unless the task or artifact instructions call for them.',
-  ].join('\n');
+    resultMode,
+  );
 
   return replaceTagContent(withTask, 'artifacts', artifactInstructions);
+}
+
+function renderArtifactsInstructions(
+  agentArtifacts: string,
+  artifactsDirPath: string,
+  resultMode: ResultMode | undefined,
+): string {
+  const withArtifactsPath = agentArtifacts.includes(ARTIFACTS_PLACEHOLDER)
+    ? agentArtifacts.replaceAll(ARTIFACTS_PLACEHOLDER, artifactsDirPath)
+    : [
+        agentArtifacts,
+        '',
+        'AgentQ artifact directory:',
+        artifactsDirPath,
+        '',
+        'If you create additional files for this run, write them under the AgentQ artifact directory. Do not create files there unless the task or artifact instructions call for them.',
+      ].join('\n');
+
+  if (!resultMode) {
+    return withArtifactsPath;
+  }
+
+  return [
+    withArtifactsPath,
+    '',
+    'AgentQ result mode:',
+    resultMode,
+    resultModeInstructions(resultMode),
+  ].join('\n');
+}
+
+function resultModeInstructions(resultMode: ResultMode): string {
+  if (resultMode === 'json') {
+    return 'Final output must be valid JSON only, with no Markdown fences or surrounding prose. If the artifact instructions define a JSON schema, follow that schema.';
+  }
+
+  return 'Final output should be human-readable plain text or Markdown. Follow any structure requested by the artifact instructions.';
 }
 
 function extractAgentArtifacts(body: string): string {
@@ -100,10 +138,12 @@ export function buildEffectiveRunConfig(
   const contextFile = overrides.contextFile ?? config.contextFile;
   const provider = overrides.provider ?? agent.frontmatter.provider;
   const reasoning = overrides.reasoning ?? agent.frontmatter.reasoning;
+  const resultMode = overrides.resultMode ?? agent.frontmatter.resultMode;
 
   validateSandbox(sandbox, 'sandbox');
   validateProvider(provider, 'provider');
   validateReasoning(reasoning, 'reasoning');
+  validateResultMode(resultMode, 'result_mode');
   if (approval !== undefined) {
     validateApproval(approval, 'approval');
   }
@@ -116,6 +156,7 @@ export function buildEffectiveRunConfig(
     model: overrides.model ?? agent.frontmatter.model,
     provider,
     reasoning,
+    resultMode,
     sandbox,
     timeout,
     timeoutMs: parseDurationMs(timeout),
@@ -131,6 +172,7 @@ function normalizeAgentFrontmatter(
   const model = readRequiredString(data, 'model', filePath);
   const provider = readRequiredString(data, 'provider', filePath);
   const reasoning = readRequiredString(data, 'reasoning', filePath);
+  const resultMode = readRequiredString(data, 'result_mode', filePath);
   const sandbox = readRequiredString(data, 'sandbox', filePath);
   const timeout = readRequiredString(data, 'timeout', filePath);
   const approval = readOptionalString(data, 'approval');
@@ -138,6 +180,7 @@ function normalizeAgentFrontmatter(
 
   validateProvider(provider, 'provider');
   validateReasoning(reasoning, 'reasoning');
+  validateResultMode(resultMode, 'result_mode');
   validateSandbox(sandbox, 'sandbox');
   if (approval !== undefined) {
     validateApproval(approval, 'approval');
@@ -151,6 +194,7 @@ function normalizeAgentFrontmatter(
     model,
     provider,
     reasoning,
+    resultMode,
     sandbox,
     timeout,
   };
@@ -244,6 +288,17 @@ function validateReasoning(
   if (!REASONING_EFFORTS.includes(value as AgentFrontmatter['reasoning'])) {
     throw new AgentQError(
       `Invalid ${key} "${value}". Use one of: ${REASONING_EFFORTS.join(', ')}.`,
+    );
+  }
+}
+
+function validateResultMode(
+  value: string,
+  key: string,
+): asserts value is AgentFrontmatter['resultMode'] {
+  if (!RESULT_MODES.includes(value as AgentFrontmatter['resultMode'])) {
+    throw new AgentQError(
+      `Invalid ${key} "${value}". Use one of: ${RESULT_MODES.join(', ')}.`,
     );
   }
 }

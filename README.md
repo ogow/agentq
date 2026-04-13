@@ -12,7 +12,7 @@ Implemented in this repo:
 - `agentq run <agent> --task <task>` using `yargs`.
 - `agentq agents list` for project-local and global agents.
 - Markdown agent parsing with YAML frontmatter.
-- Required agent fields: `id`, `description`, `provider`, `model`, `reasoning`, `sandbox`, and `timeout`.
+- Required agent fields: `id`, `description`, `provider`, `model`, `reasoning`, `result_mode`, `sandbox`, and `timeout`.
 - Optional AgentQ config in `.agentq/config.json`, including `context_file`.
 - Required body anchors: `<task>` and `<artifacts>`.
 - Project-local agent resolution before global resolution.
@@ -43,6 +43,7 @@ description: Summarizes a task with concise practical output.
 provider: codex
 model: gpt-5.4
 reasoning: none
+result_mode: plain
 sandbox: workspace-write
 timeout: 5m
 ---
@@ -52,10 +53,11 @@ You are concise and practical.
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
-Write a short final answer. Any durable run files belong in the active run directory.
+Write a short final answer. Any durable run files belong under {{artifacts}}.
 </artifacts>
 ```
 
@@ -68,6 +70,8 @@ bun run agentq run example --task "summarize this repo"
 When the run finishes, AgentQ prints a compact summary with status, duration, tool usage, changed files, the run directory, and the final response.
 
 Use `--details` for full artifact paths and metadata. Use `--verbose` for a live event timeline plus the detailed final summary. Use `--no-color` when plain terminal output is preferred.
+
+Use `--result-mode plain` for human-facing output or `--result-mode json` when a harness or orchestrator will parse the final answer. AgentQ injects the selected result mode into the run prompt.
 
 List agents:
 

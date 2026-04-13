@@ -28,6 +28,7 @@ Common `agentq run` flags:
 - `--provider`: provider override, currently `codex`.
 - `--model`: model override.
 - `--reasoning`: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+- `--result-mode`: `plain` for human-readable output or `json` for harness/orchestrator parsing.
 - `--timeout`: duration such as `100ms`, `1m`, or `1h`.
 - `--sandbox`: `read-only`, `workspace-write`, or `danger-full-access`.
 - `--approval`: approval policy when supported.
@@ -63,7 +64,7 @@ Expected files:
 - `stdout.jsonl`: raw provider JSONL/event stream.
 - `stderr.log`: provider stderr.
 - `output.md`: final agent message.
-- `artifacts/`: optional extra files created by the agent.
+- `artifacts/`: optional extra files created by the agent, exposed in prompts through `{{artifacts}}`.
 
 Use `output.md` for the final answer. Use `run.json` for stable inspection. Use `stdout.jsonl` when debugging tool use, progress, or agent behavior.
 

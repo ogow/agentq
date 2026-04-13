@@ -22,6 +22,7 @@ const METADATA: RunMetadata = {
     model: 'gpt-5.4-mini',
     provider: 'codex',
     reasoning: 'low',
+    resultMode: 'plain',
     sandbox: 'workspace-write',
     timeout: '1m',
     timeoutMs: 60000,
@@ -70,6 +71,7 @@ describe('rendering', () => {
     expect(summary).toContain('AgentQ Run Complete');
     expect(summary).toContain('reviewer');
     expect(summary).toContain('2 calls, 0 failures');
+    expect(summary).toContain('plain');
     expect(summary).toContain('12,345');
     expect(summary).toContain('src/core/render.ts');
     expect(summary).toContain('Final output');

@@ -26,7 +26,12 @@ export async function prepareRun(request: RunRequest): Promise<PreparedRun> {
     ? resolveContextFile(request.projectCwd, config.contextFile)
     : undefined;
   const paths = await createRunPaths(agent.id);
-  const prompt = renderAgentPrompt(agent, request.task, paths.artifactsDirPath);
+  const prompt = renderAgentPrompt(
+    agent,
+    request.task,
+    paths.artifactsDirPath,
+    config.resultMode,
+  );
 
   return {
     agent,

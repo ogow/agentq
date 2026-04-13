@@ -12,7 +12,7 @@ Delivered:
 - Provider-neutral core types.
 - Codex provider adapter.
 - Markdown + YAML frontmatter parser.
-- Explicit required runtime fields: `provider`, `model`, and `reasoning`.
+- Explicit required runtime fields: `provider`, `model`, `reasoning`, and `result_mode`.
 - Tool-level context-file config outside agent definitions.
 - Required anchors for `<task>` and `<artifacts>`.
 - Run directories in `~/.agentq/runs`.

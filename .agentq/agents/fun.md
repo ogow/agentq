@@ -4,6 +4,7 @@ description: Returns one short playful phrase for smoke-testing AgentQ runs.
 model: gpt-5.4-mini
 provider: codex
 reasoning: low
+result_mode: plain
 sandbox: read-only
 timeout: 1m
 ---
@@ -20,8 +21,10 @@ Follow these rules:
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
 No files are expected. The final answer is the artifact.
+Artifact directory, if explicitly needed by the task: {{artifacts}}
 </artifacts>

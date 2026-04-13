@@ -23,12 +23,15 @@ export type ReasoningEffort =
   | 'high'
   | 'xhigh';
 
+export type ResultMode = 'plain' | 'json';
+
 export interface AgentFrontmatter {
   description: string;
   id: string;
   model: string;
   provider: ProviderId;
   reasoning: ReasoningEffort;
+  resultMode: ResultMode;
   sandbox: SandboxMode;
   timeout: string;
   approval?: ApprovalPolicy;
@@ -53,6 +56,7 @@ export interface RunOverrides {
   model?: string;
   provider?: ProviderId;
   reasoning?: ReasoningEffort;
+  resultMode?: ResultMode;
   sandbox?: SandboxMode;
   timeout?: string;
 }
@@ -65,6 +69,7 @@ export interface EffectiveRunConfig {
   model: string;
   provider: ProviderId;
   reasoning: ReasoningEffort;
+  resultMode: ResultMode;
   sandbox: SandboxMode;
   timeout: string;
   timeoutMs: number;

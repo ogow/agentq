@@ -255,6 +255,7 @@ function formatDetailedRunSummary(
     row('agent', metadata.agent.id),
     row('result', statusText(metadata.status, style)),
     row('model', `${metadata.config.model} / ${metadata.config.reasoning}`),
+    row('output', metadata.config.resultMode),
     row('duration', formatDuration(metadata.durationMs)),
     row('tools', toolTotals),
     row('edits', editTotals),

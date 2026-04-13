@@ -13,6 +13,7 @@ description: Reviews code changes for correctness issues only.
 provider: codex
 model: gpt-5.4-mini
 reasoning: low
+result_mode: plain
 sandbox: read-only
 timeout: 5m
 ---
@@ -43,10 +44,12 @@ Output:
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
 Write only the final answer. Do not create additional files.
+Artifact directory, if explicitly needed by the task: {{artifacts}}
 
 Final answer format:
 
@@ -71,6 +74,7 @@ description: Makes a focused code fix and verifies it.
 provider: codex
 model: gpt-5.4
 reasoning: medium
+result_mode: plain
 sandbox: workspace-write
 timeout: 15m
 ---
@@ -100,10 +104,12 @@ Output:
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
 Write only the final answer unless the task explicitly asks for extra files.
+Write any extra files under {{artifacts}}.
 
 Final answer format:
 
@@ -113,7 +119,7 @@ Changes:
 Verification:
 - Command run and result, or why verification could not run.
 Artifacts:
-- None, unless extra files were created under the AgentQ artifact directory.
+- None, unless extra files were created under {{artifacts}}.
 Next:
 - Any remaining action, or None.
 </artifacts>
@@ -130,6 +136,7 @@ description: Reviews code changes and returns machine-readable findings for a ha
 provider: codex
 model: gpt-5.4-mini
 reasoning: low
+result_mode: json
 sandbox: read-only
 timeout: 5m
 ---
@@ -159,10 +166,12 @@ Output:
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
 Write no extra files.
+Artifact directory, if explicitly needed by the task: {{artifacts}}
 
 Final answer must be valid JSON only:
 
@@ -206,6 +215,7 @@ description: Delegates work to focused AgentQ agents and synthesizes their resul
 provider: codex
 model: gpt-5.4
 reasoning: medium
+result_mode: plain
 sandbox: workspace-write
 timeout: 20m
 ---
@@ -232,10 +242,12 @@ Output:
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
 Write only the final answer.
+Artifact directory, if explicitly needed by the task: {{artifacts}}
 
 Final answer format:
 

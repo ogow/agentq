@@ -20,7 +20,7 @@ Final answer:
 
 Durable files:
 - Write additional files only when this task asks for them.
-- Write all additional files under the AgentQ artifact directory injected into this section.
+- Write all additional files under {{artifacts}}.
 - Create exactly these files:
   - `plan.md`: short implementation or investigation plan.
   - `findings.json`: machine-readable findings when findings exist.
@@ -38,6 +38,7 @@ For tasks that do not need files, say so:
 ```md
 <artifacts>
 Write only the final answer. Do not create additional files unless the task explicitly asks for them.
+Artifact directory, if explicitly needed by the task: {{artifacts}}
 </artifacts>
 ```
 
@@ -98,10 +99,11 @@ Output:
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
-[Exact final answer and file contract.]
+[Exact final answer and file contract. Use {{artifacts}} for additional files.]
 </artifacts>
 ```
 

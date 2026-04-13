@@ -79,6 +79,7 @@ function metadata(agentId: string, startedAt: string): RunMetadata {
       model: 'gpt-5.4-mini',
       provider: 'codex',
       reasoning: 'low',
+      resultMode: 'plain',
       sandbox: 'workspace-write',
       timeout: '1m',
       timeoutMs: 60000,

@@ -2,9 +2,10 @@
 
 - AgentQ is CLI-first and currently targets Bun + TypeScript.
 - The primary command is `agentq run <agent> --task <task>`.
-- Agent files are Markdown with YAML frontmatter and required `<task>` plus `<artifacts>` anchors.
+- Agent files are Markdown with YAML frontmatter and required `<task>` plus `<artifacts>` anchors; authored templates use `{{task}}` inside `<task>` and `{{artifacts}}` inside `<artifacts>` as placeholders that AgentQ replaces at run time.
 - Agent frontmatter includes a required `description` field for discovery and reports.
-- Agent runtime frontmatter must explicitly set `provider`, `model`, and `reasoning`; use `reasoning: none` when the model does not support reasoning.
+- Agent runtime frontmatter must explicitly set `provider`, `model`, `reasoning`, and `result_mode`; use `reasoning: none` when the model does not support reasoning, and choose `result_mode: plain` for human-facing output or `result_mode: json` for harness/orchestrator parsing.
+- AgentQ injects the effective result mode into the rendered `<artifacts>` prompt block so CLI overrides affect provider instructions, not only metadata.
 - Context file selection belongs to AgentQ config or the `--context-file` run override, not agent frontmatter.
 - Project-local agents in `.agentq/agents/<id>.md` override global agents in `~/.agentq/agents/<id>.md`.
 - Run history belongs under `~/.agentq/runs`, not inside the project repository, and is inspected with `agentq runs list`.

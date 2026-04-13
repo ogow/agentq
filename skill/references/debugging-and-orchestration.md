@@ -76,6 +76,7 @@ Return a concise synthesis with run directories for traceability.
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>

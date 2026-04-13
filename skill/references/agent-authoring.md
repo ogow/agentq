@@ -13,6 +13,7 @@ description: Reviews code changes for correctness issues.
 provider: codex
 model: gpt-5.4-mini
 reasoning: low
+result_mode: plain
 sandbox: read-only
 timeout: 5m
 ---
@@ -25,11 +26,12 @@ Do not comment on style unless it affects correctness.
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
 Write the final answer to the normal AgentQ output.
-If you create extra files, write them under the AgentQ artifact directory.
+If you create extra files, write them under {{artifacts}}.
 </artifacts>
 ```
 
@@ -40,6 +42,7 @@ Required frontmatter fields:
 - `provider`: currently `codex`.
 - `model`: model name for the provider.
 - `reasoning`: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+- `result_mode`: `plain` for human-readable output or `json` for harness/orchestrator parsing.
 - `sandbox`: `read-only`, `workspace-write`, or `danger-full-access`.
 - `timeout`: duration such as `100ms`, `1m`, or `1h`.
 
@@ -53,8 +56,8 @@ Useful optional fields:
 Use anchors sparingly and consistently:
 
 - `<instructions>`: durable behavior and role.
-- `<task>`: leave empty in the agent file; AgentQ injects the run task.
-- `<artifacts>`: final answer and file output contract.
+- `<task>`: include `{{task}}` as the human-visible placeholder; AgentQ replaces the tag contents with the run task.
+- `<artifacts>`: final answer and file output contract. Use `{{artifacts}}` as the run artifact directory placeholder.
 - `<context>`: optional local notes that are part of the agent, not the project context file.
 - `<verification>`: commands, checks, or evidence expected before claiming success.
 - `<handoff>`: optional format for an orchestrator or later human.
@@ -116,6 +119,9 @@ Choose output format from the consumer:
 - Use JSON when a harness, orchestrator, script, or later agent must parse the result.
 - Do not use JSON just because it feels rigorous; invalid or over-complex JSON is worse than a clear human answer.
 - If JSON is required, make the final answer valid JSON only, with no surrounding prose or Markdown fences.
+- Set `result_mode: plain` for plain structured text.
+- Set `result_mode: json` for valid JSON-only output.
+- AgentQ injects the selected result mode into the rendered `<artifacts>` contract, including CLI overrides.
 
 Recommended plain sections:
 
@@ -149,7 +155,7 @@ For harnessed agents, include enough fields for feedback and retry:
 
 - `outcome`: `succeeded`, `partial`, or `blocked`.
 - `summary`: short human-readable result.
-- `artifacts`: paths under the AgentQ artifact directory.
+- `artifacts`: paths under the run artifact directory from `{{artifacts}}`.
 - `verification`: commands or checks performed, plus status.
 - `blocked_reason`: why the harness should not treat the run as successful.
 - `next`: concrete retry or follow-up instruction when useful.

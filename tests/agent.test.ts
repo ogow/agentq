@@ -17,6 +17,7 @@ description: Test agent used by AgentQ unit tests.
 model: gpt-5.4
 provider: codex
 reasoning: none
+result_mode: plain
 sandbox: workspace-write
 timeout: 1m
 ---
@@ -26,10 +27,11 @@ Be useful.
 </instructions>
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
-Write output.md.
+Write output.md under {{artifacts}}.
 </artifacts>
 `;
 
@@ -49,10 +51,53 @@ describe('agent files', () => {
     expect(prompt).toContain('<task>\ndo the thing\n</task>');
   });
 
-  test('adds the run artifact directory to the artifacts anchor', async () => {
+  test('replaces the artifacts placeholder with the run artifact directory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-'));
     const filePath = join(root, 'example.md');
     await writeFile(filePath, VALID_AGENT, 'utf8');
+
+    const agent = await readAgentFile(filePath, 'project');
+    const prompt = renderAgentPrompt(
+      agent,
+      'do the thing',
+      '/tmp/agentq-run/artifacts',
+    );
+
+    expect(prompt).toContain(
+      'Write output.md under /tmp/agentq-run/artifacts.',
+    );
+    expect(prompt).not.toContain('{{artifacts}}');
+    expect(prompt).not.toContain('AgentQ artifact directory:');
+  });
+
+  test('adds result mode instructions to the artifacts anchor', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-'));
+    const filePath = join(root, 'example.md');
+    await writeFile(filePath, VALID_AGENT, 'utf8');
+
+    const agent = await readAgentFile(filePath, 'project');
+    const prompt = renderAgentPrompt(
+      agent,
+      'do the thing',
+      '/tmp/agentq-run/artifacts',
+      'json',
+    );
+
+    expect(prompt).toContain('AgentQ result mode:\njson');
+    expect(prompt).toContain('Final output must be valid JSON only');
+  });
+
+  test('adds the run artifact directory to legacy artifacts anchors', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-'));
+    const filePath = join(root, 'example.md');
+    await writeFile(
+      filePath,
+      VALID_AGENT.replace(
+        'Write output.md under {{artifacts}}.',
+        'Write output.md.',
+      ),
+      'utf8',
+    );
 
     const agent = await readAgentFile(filePath, 'project');
     const prompt = renderAgentPrompt(
@@ -75,12 +120,14 @@ describe('agent files', () => {
     const config = buildEffectiveRunConfig(agent, {
       model: 'override-model',
       reasoning: 'low',
+      resultMode: 'json',
       sandbox: 'read-only',
       timeout: '100ms',
     });
 
     expect(config.model).toBe('override-model');
     expect(config.reasoning).toBe('low');
+    expect(config.resultMode).toBe('json');
     expect(config.sandbox).toBe('read-only');
     expect(config.timeoutMs).toBe(100);
   });
@@ -123,7 +170,7 @@ describe('agent files', () => {
     });
   });
 
-  test('requires explicit provider, model, and reasoning', async () => {
+  test('requires explicit provider, model, reasoning, and result mode', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-'));
     const filePath = join(root, 'missing-runtime.md');
     await writeFile(
@@ -136,6 +183,7 @@ timeout: 1m
 ---
 
 <task>
+{{task}}
 </task>
 
 <artifacts>
@@ -146,6 +194,20 @@ Write output.md.
     );
 
     await expect(readAgentFile(filePath, 'project')).rejects.toThrow('model');
+  });
+
+  test('requires result mode to be plain or json', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-'));
+    const filePath = join(root, 'bad-result-mode.md');
+    await writeFile(
+      filePath,
+      VALID_AGENT.replace('result_mode: plain', 'result_mode: xml'),
+      'utf8',
+    );
+
+    await expect(readAgentFile(filePath, 'project')).rejects.toThrow(
+      'result_mode',
+    );
   });
 
   test('requires task and artifacts anchors', async () => {
