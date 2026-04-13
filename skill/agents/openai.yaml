@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentQ"
+  short_description: "Author and operate AgentQ agents"
+  default_prompt: "Use $agentq to create a focused AgentQ agent and explain how to run and inspect it."

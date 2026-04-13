@@ -1,0 +1,28 @@
+{
+  "name": "agentq",
+  "version": "0.1.0",
+  "description": "CLI-first tools for authoring and running inspectable coding agents.",
+  "type": "module",
+  "bin": {
+    "agentq": "./src/cli.ts"
+  },
+  "scripts": {
+    "agentq": "bun src/cli.ts",
+    "check": "bun test && tsc --noEmit && gts lint",
+    "fix": "gts fix",
+    "lint": "gts lint",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "front-matter": "^4.0.2",
+    "yargs": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.1",
+    "@types/yargs": "^17.0.34",
+    "gts": "^7.0.0",
+    "typescript": "^5.9.3"
+  }
+}
