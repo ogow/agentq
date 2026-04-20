@@ -10,7 +10,7 @@ steps:
   - id: implement
     loop:
       over: "{{split.tasks}}"
-      retries: 1
+      retries: 8
       steps:
         - id: build
           agent: harness-builder

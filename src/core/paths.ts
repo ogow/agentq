@@ -80,6 +80,28 @@ export function resolveContextFile(
   return contextPath;
 }
 
+export function resolveRunDir(
+  runIdOrPath: string,
+  homeDir = agentqHome(),
+): string {
+  if (isAbsolute(runIdOrPath) || isPathLike(runIdOrPath)) {
+    const runDir = isAbsolute(runIdOrPath) ? runIdOrPath : resolve(runIdOrPath);
+
+    if (existsSync(runDir)) {
+      return runDir;
+    }
+
+    throw new AgentQError(`Agent run not found: ${runIdOrPath}`);
+  }
+
+  const homeRunDir = join(homeDir, 'runs', runIdOrPath);
+  if (existsSync(homeRunDir)) {
+    return homeRunDir;
+  }
+
+  throw new AgentQError(`Agent run not found: ${runIdOrPath}`);
+}
+
 export async function createRunPaths(agentId: string): Promise<RunPaths> {
   const runDir = join(
     agentqHome(),
@@ -177,6 +199,10 @@ function sanitizePathPart(value: string): string {
       .replace(/[^a-z0-9_-]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'agent'
   );
+}
+
+function isPathLike(value: string): boolean {
+  return value.includes('/') || value.includes('\\') || value.startsWith('.');
 }
 
 function shortId(): string {

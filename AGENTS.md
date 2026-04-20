@@ -8,6 +8,12 @@ This repo is a Bun and TypeScript CLI project. The main local quality command is
 bun run check
 ```
 
+AgentQ should follow Unix methodology. Prefer small composable commands, plain text or JSON/JSONL records, useful exit codes, and file-system state that a human can inspect with tools like `cat`, `jq`, `tail`, and `rg`. Avoid hidden services, background daemons, databases, dashboards, or broad frameworks unless a simple CLI/file design has clearly stopped being enough.
+
+Design features as thin layers over stable local records. A CLI command should do one job well and produce output that another command or script can consume. When machine-readable output is useful, prefer explicit `--json` or `--ndjson` flags over changing human-readable defaults.
+
+MCP should be treated as an optional adapter over AgentQ's existing commands and files, not as the core architecture. Do not introduce an MCP server, socket, or long-running process for basic local behavior. Consider MCP only after the CLI and file contracts are stable and another agent host needs structured access to AgentQ runs, harnesses, evals, or commands.
+
 Harness-related work should preserve the current simple run model:
 
 ```text

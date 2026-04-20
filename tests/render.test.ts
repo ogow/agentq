@@ -175,7 +175,7 @@ describe('rendering', () => {
     });
   });
 
-  test('renders agent messages in progress and messages modes', () => {
+  test('renders agent messages in progress and verbose modes', () => {
     const progressChunks: string[] = [];
     const progress = createProgressRenderer({
       agentId: 'builder',
@@ -191,17 +191,32 @@ describe('rendering', () => {
       phase: 'reasoning',
       provider: 'codex',
     });
+    progress.onEvent({
+      kind: 'token_usage',
+      provider: 'codex',
+      tokenUsage: {
+        cachedInputTokens: 12,
+        inputTokens: 100,
+        outputTokens: 20,
+        reasoningOutputTokens: 5,
+        totalTokens: 137,
+      },
+    });
     progress.stop();
 
-    expect(progressChunks.join('')).toContain(
-      'agent builder  message  [reasoning] I am inspecting the current render behavior.',
+    expect(progressChunks.join('')).not.toContain(
+      'I am inspecting the current render behavior',
     );
+    expect(progressChunks.join('')).not.toContain(
+      'tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137',
+    );
+    expect(progressChunks.join('')).toContain('AgentQ builder');
 
     const messageChunks: string[] = [];
     const messages = createProgressRenderer({
       agentId: 'builder',
       color: false,
-      logLevel: 'messages',
+      verbosity: 1,
       stream: {
         write: chunk => messageChunks.push(String(chunk)),
       },
@@ -249,18 +264,233 @@ describe('rendering', () => {
       },
     });
 
+    const task = {
+      attempt: 1,
+      detail: 'build',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Built the change.',
+      total: 1,
+    };
     const step = {detail: 'build', label: 'builder'};
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.finishStep(step, {
       status: 'success',
       summary: 'Built the change.',
     });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Built the change.',
+    });
     renderer.stop();
 
-    expect(chunks.join('')).toContain('✓ builder build - Built the change.');
+    const output = chunks.join('');
+    expect(output).toContain('\r');
+    expect(output).toContain('✓ task 1/1 success retry 1/1  Built the change.');
   });
 
-  test('keeps split token usage visible when a harness step completes', () => {
+  test('keeps default tty task activity on one mutable live row', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runId: 'devloop-e50232',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 4,
+      summary: 'Fix item count vs retry count',
+      total: 4,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-builder',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'reading harness summary code\nand checking the mutation path',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      command: 'bun test tests/harness.test.ts',
+      kind: 'tool_started',
+      provider: 'codex',
+      toolName: 'exec_command',
+    });
+    renderer.onEvent({
+      command: 'bun test tests/harness.test.ts',
+      exitCode: 1,
+      kind: 'tool_finished',
+      provider: 'codex',
+      status: 'failed',
+      toolName: 'exec_command',
+    });
+    renderer.finishStep(step, {
+      durable: false,
+      status: 'failed',
+      summary: 'Check failed.',
+    });
+    task.attempt = 2;
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'applying feedback',
+      provider: 'codex',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Recovered.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Recovered.',
+    });
+    renderer.stop();
+
+    const output = chunks.join('');
+    expect(output.split('\r\x1b[2K').length - 1).toBeGreaterThan(3);
+    expect(output).toContain(
+      'devloop-e50232 task 1/4 retry 1/4  harness-builder  reading harness summary code and checking the mutation path',
+    );
+    expect(output).not.toContain(
+      'reading harness summary code\nand checking the mutation path',
+    );
+    expect(output).not.toContain('bun test tests/harness.test.ts');
+    expect(output).toContain(
+      'devloop-e50232 task 1/4 retry 1/4  harness-builder  retrying',
+    );
+    expect(output).toContain(
+      'devloop-e50232 task 1/4 retry 2/4  harness-builder  applying feedback',
+    );
+    const completionLine =
+      '✓ task 1/4 success retry 2/4  Fix item count vs retry count';
+    expect(output.split(completionLine).length - 1).toBe(1);
+    expect((output.match(/\n/g) ?? []).length).toBe(1);
+    expect(output).toContain(
+      '\r\x1b[2K✓ task 1/4 success retry 2/4  Fix item count vs retry count\n',
+    );
+  });
+
+  test('keeps raw command text out of the default live row', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runId: 'devloop-e50232',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.check',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Running checks.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.check',
+      label: 'check',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      command: 'bun run check',
+      kind: 'tool_started',
+      provider: 'codex',
+      toolName: 'exec_command',
+    });
+    renderer.onEvent({
+      command: 'bun run check',
+      exitCode: 1,
+      kind: 'tool_finished',
+      provider: 'codex',
+      status: 'failed',
+      toolName: 'exec_command',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Running checks.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Running checks.',
+    });
+    renderer.stop();
+
+    const output = chunks.join('');
+    expect(output).toContain(
+      'devloop-e50232 task 1/1 retry 1/1  check  working',
+    );
+    expect(output).toContain('retrying');
+    expect(output).not.toContain('bun run check');
+    expect(output.split('Running checks.').length - 1).toBe(1);
+    expect(output).toContain('✓ task 1/1 success retry 1/1  Running checks.');
+  });
+
+  test('styles the default live activity as dim when color is enabled', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: true,
+      runId: 'devloop-e50232',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'builder',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'checking the renderer ownership boundary',
+      provider: 'codex',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.stop();
+
+    const output = chunks.join('');
+    expect(output).toContain(
+      '\u001b[2mchecking the renderer ownership boundary\u001b[22m',
+    );
+    expect(output).toContain('\u001b[1mdevloop-e50232\u001b[22m');
+  });
+
+  test('keeps split token usage out of the default durable tty history', () => {
     const chunks: string[] = [];
     const renderer = createHarnessProgressRenderer({
       color: false,
@@ -270,7 +500,17 @@ describe('rendering', () => {
       },
     });
 
+    const task = {
+      attempt: 1,
+      detail: 'build',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Built the change.',
+      total: 1,
+    };
     const step = {detail: 'build', label: 'builder'};
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.onEvent({
       kind: 'token_usage',
@@ -287,14 +527,64 @@ describe('rendering', () => {
       status: 'success',
       summary: 'Built the change.',
     });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Built the change.',
+    });
     renderer.stop();
 
-    expect(chunks.join('')).toContain(
-      '✓ builder build - Built the change. · tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137',
+    const output = chunks.join('');
+    expect(output).toContain('✓ task 1/1 success retry 1/1  Built the change.');
+    expect(output).not.toContain(
+      'tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137',
     );
   });
 
-  test('persists assistant messages in non-verbose harness output', () => {
+  test('writes bounded history lines for default non-tty harness output', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      detail: 'build',
+      index: 1,
+      label: 'item',
+      summary: 'Built the change.',
+      total: 1,
+    };
+    const step = {detail: 'build', label: 'builder'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'building the current patch',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      command: 'bun run check',
+      kind: 'tool_started',
+      provider: 'codex',
+      toolName: 'exec_command',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Built the change.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Built the change.',
+    });
+
+    const output = chunks.join('').trim().split('\n').filter(Boolean);
+    expect(output).toEqual(['✓ task 1/1 success retry 1/1  Built the change.']);
+    expect(chunks.join('')).not.toContain('\r');
+  });
+
+  test('updates the live row with assistant messages and keeps token usage out of durable output', () => {
     const chunks: string[] = [];
     const renderer = createHarnessProgressRenderer({
       color: false,
@@ -304,7 +594,20 @@ describe('rendering', () => {
       },
     });
 
-    const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'builder',
+    };
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.onEvent({
       kind: 'assistant_message',
@@ -326,17 +629,23 @@ describe('rendering', () => {
       status: 'success',
       summary: 'Done.',
     });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
 
     const output = chunks.join('');
     expect(output).toContain(
-      'agent builder task-001.attempt-001.worker  message  I am checking the harness configuration before editing.',
+      'I am checking the harness configuration before editing.',
     );
-    expect(output).toContain(
-      '✓ builder task-001.attempt-001.worker - Done. · tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137',
+    expect(output).not.toContain(
+      'tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137',
     );
+    expect((output.match(/\n/g) ?? []).length).toBe(1);
+    expect(output).toContain('✓ task 1/1 success retry 1/1  Done.');
   });
 
-  test('persists failed tool finishes in non-verbose harness output', () => {
+  test('does not persist failed tool finishes in non-verbose harness output', () => {
     const chunks: string[] = [];
     const renderer = createHarnessProgressRenderer({
       color: false,
@@ -346,7 +655,17 @@ describe('rendering', () => {
       },
     });
 
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Command failed.',
+      total: 1,
+    };
     const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.onEvent({
       kind: 'tool_finished',
@@ -358,13 +677,307 @@ describe('rendering', () => {
       status: 'failed',
       summary: 'Command failed.',
     });
+    renderer.finishTask(task, {
+      status: 'failed',
+      summary: 'Command failed.',
+    });
 
-    expect(chunks.join('')).toContain(
-      'agent builder task-001.attempt-001.worker  fail  exec_command failed',
+    const output = chunks.join('');
+    expect(output).not.toContain('agent task 1/1  fail  exec_command failed');
+    expect(output).toContain('✗ task 1/1 failed retry 1/1  Command failed.');
+  });
+
+  test('renders terminal task failures as one durable line and a concise failure block', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runDir: '/home/me/.agentq/harness-runs/devloop-e50232',
+      runId: 'devloop-e50232',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Command failed.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-reviewer',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      durable: false,
+      status: 'failed',
+      summary: 'Command failed.',
+    });
+    renderer.finishTask(task, {
+      status: 'failed',
+      step,
+      summary: 'Command failed.',
+    });
+    renderer.stop();
+
+    const output = chunks.join('');
+    const failureLine = '✗ task 1/1 failed retry 1/1  Command failed.';
+    const failureCount = output.split(failureLine).length - 1;
+    expect(failureCount).toBe(1);
+    expect(output).toContain(
+      '\r\x1b[2K✗ task 1/1 failed retry 1/1  Command failed.\n',
     );
-    expect(chunks.join('')).toContain(
-      '✗ builder task-001.attempt-001.worker - Command failed.',
+    expect(output).toContain(
+      'Failure\n  agent: harness-reviewer\n  retry: 1/1\n  reason: Command failed.\n  run: /home/me/.agentq/harness-runs/devloop-e50232',
     );
+    expect(output).not.toContain('command: bun -e process.exit(1)');
+    expect(output).not.toContain('exit: 1');
+    expect(output).not.toContain('stderr: boom');
+    expect(output).not.toContain('stdout: noise');
+  });
+
+  test('keeps default non-tty failure blocks concise', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runDir: '/home/me/.agentq/harness-runs/devloop-e50232',
+      runId: 'devloop-e50232',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Command failed.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-reviewer',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishTask(task, {
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      stderrTail: 'boom',
+      status: 'failed',
+      stdoutTail: 'noise',
+      step,
+      summary: 'Command failed.',
+    });
+
+    const output = chunks.join('');
+    expect(output).toContain('✗ task 1/1 failed retry 1/1  Command failed.');
+    expect(output).toContain(
+      'Failure\n  agent: harness-reviewer\n  retry: 1/1\n  reason: Command failed.\n  run: /home/me/.agentq/harness-runs/devloop-e50232',
+    );
+    expect(output).not.toContain('command: bun -e process.exit(1)');
+    expect(output).not.toContain('exit: 1');
+    expect(output).not.toContain('stderr: boom');
+    expect(output).not.toContain('stdout: noise');
+  });
+
+  test('shows command diagnostics in verbose harness failure blocks', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runDir: '/home/me/.agentq/harness-runs/devloop-e50232',
+      runId: 'devloop-e50232',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbosity: 2,
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Command failed.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-reviewer',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishTask(task, {
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      stderrTail: 'boom',
+      status: 'failed',
+      stdoutTail: 'noise',
+      step,
+      summary: 'Command failed.',
+    });
+
+    const output = chunks.join('');
+    expect(output).toContain('command: bun -e process.exit(1)');
+    expect(output).toContain('exit: 1');
+    expect(output).toContain('stderr: boom');
+    expect(output).toContain('stdout: noise');
+  });
+
+  test('keeps retryable verbose step diagnostics visible after a failed attempt', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runId: 'devloop-a0d2b5',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbosity: 2,
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 2,
+      summary: 'Working.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-builder',
+    };
+
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      command: 'bun -e process.exit(1)',
+      durable: false,
+      exitCode: 1,
+      stderrTail: 'boom',
+      status: 'failed',
+      stdoutTail: 'noise',
+      summary: 'Build failed.',
+    });
+    task.attempt = 2;
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Recovered.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Recovered.',
+    });
+
+    const output = chunks.join('');
+    expect(output).toContain('command: bun -e process.exit(1)');
+    expect(output).toContain('stderr: boom');
+    expect(output).toContain('stdout: noise');
+    expect(output).toContain('✓ task 1/1 success retry 2/2  Working.');
+  });
+
+  test('keeps retryable harness step failures out of the durable tty history', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Recovered.',
+      total: 1,
+    };
+    const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      durable: false,
+      status: 'failed',
+      summary: 'Build failed.',
+    });
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Recovered.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Recovered.',
+    });
+
+    const output = chunks.join('');
+    expect(output).not.toContain('✗ task 1/1 failed retry 1/1  Build failed.');
+    expect(output).not.toContain('Build failed.');
+    expect(output).not.toMatch(/ {20,}/);
+    expect(output).toContain('✓ task 1/1 success retry 1/1  Recovered.');
+  });
+
+  test('renders standalone failure blocks for step failures without a task', () => {
+    const ttyChunks: string[] = [];
+    const ttyRenderer = createHarnessProgressRenderer({
+      color: false,
+      stream: {
+        isTTY: true,
+        write: chunk => ttyChunks.push(String(chunk)),
+      },
+    });
+
+    const step = {detail: 'split', label: 'splitter'};
+    ttyRenderer.startStep(step);
+    ttyRenderer.finishStep(step, {
+      durable: false,
+      status: 'failed',
+      summary: 'The plan is invalid.',
+    });
+    ttyRenderer.stop();
+
+    const ttyOutput = ttyChunks.join('');
+    expect(ttyOutput).toContain('Failure');
+    expect(ttyOutput).toContain('step: split');
+    expect(ttyOutput).toContain('reason: The plan is invalid.');
+    expect(ttyOutput).not.toContain('task:');
+
+    const plainChunks: string[] = [];
+    const plainRenderer = createHarnessProgressRenderer({
+      color: false,
+      stream: {
+        write: chunk => plainChunks.push(String(chunk)),
+      },
+    });
+
+    plainRenderer.startStep(step);
+    plainRenderer.finishStep(step, {
+      durable: false,
+      status: 'failed',
+      summary: 'The plan is invalid.',
+    });
+
+    const plainOutput = plainChunks.join('');
+    expect(plainOutput).toContain('Failure');
+    expect(plainOutput).toContain('step: split');
+    expect(plainOutput).toContain('reason: The plan is invalid.');
+    expect(plainOutput).not.toContain('task:');
   });
 
   test('renders harness step starts in verbose mode without a TTY', () => {
@@ -377,17 +990,137 @@ describe('rendering', () => {
       verbose: true,
     });
 
+    const task = {
+      attempt: 1,
+      detail: 'planner',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Needs a product decision.',
+      total: 1,
+    };
     const step = {detail: 'planner', label: 'task-planner'};
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.finishStep(step, {
       status: 'blocked',
       summary: 'Needs a product decision.',
     });
+    renderer.finishTask(task, {
+      status: 'blocked',
+      summary: 'Needs a product decision.',
+    });
 
-    expect(chunks.join('')).toContain('harness start task-planner planner');
+    expect(chunks.join('')).toContain('planner  task-planner');
     expect(chunks.join('')).toContain(
-      'harness blocked task-planner planner - Needs a product decision.',
+      'planner  task-planner  Needs a product decision.',
     );
+  });
+
+  test('renders structured verbose harness output without raw assistant JSON', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runId: 'devloop-a0d2b5',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbose: true,
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'split',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Add the first local eval runner',
+      total: 1,
+    };
+    const splitStep = {detail: 'split', label: 'task-splitter'};
+    const buildStep = {detail: 'build', label: 'harness-builder'};
+    renderer.startTask(task);
+    renderer.startStep(splitStep);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'mapping the existing CLI and run storage',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      kind: 'token_usage',
+      provider: 'codex',
+      tokenUsage: {
+        cachedInputTokens: 12,
+        inputTokens: 100,
+        outputTokens: 20,
+        reasoningOutputTokens: 5,
+        totalTokens: 137,
+      },
+    });
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message:
+        '{"status":"success","summary":"Split into one implementation task for the first eval runner slice.","result":{"tasks":[{"title":"Add the first local eval runner"}]}}',
+      provider: 'codex',
+    });
+    renderer.finishStep(splitStep, {
+      result: {
+        tasks: [{title: 'Add the first local eval runner'}],
+      },
+      status: 'success',
+      summary:
+        'Split into one implementation task for the first eval runner slice.',
+    });
+    renderer.startStep(buildStep);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'checking the current tests and eval modules',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message:
+        '{"status":"success","summary":"Verified the local eval runner end to end","result":{"changedFiles":[]}}',
+      provider: 'codex',
+    });
+    renderer.finishStep(buildStep, {
+      result: {changedFiles: []},
+      status: 'success',
+      summary: 'Verified the local eval runner end to end',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Add the first local eval runner',
+    });
+
+    const output = chunks.join('');
+    expect(output.split('\n')[0]).toBe('devloop-a0d2b5');
+    expect(output).toContain(
+      '▸ task 1/1  retry 1/1  Add the first local eval runner',
+    );
+    expect(output).toContain('▸ split  task-splitter');
+    expect(output).toContain(
+      '  trace  mapping the existing CLI and run storage',
+    );
+    expect(output).toContain(
+      '✓ split  task-splitter  1 task: Add the first local eval runner',
+    );
+    expect(output).toContain('▸ build  harness-builder');
+    expect(output).toContain(
+      '  trace  checking the current tests and eval modules',
+    );
+    expect(output).toContain(
+      '✓ build  harness-builder  Verified the local eval runner end to end',
+    );
+    expect(output).not.toContain('agent task-splitter --:-- message');
+    expect(output).not.toContain('agent harness-builder --:-- message');
+    expect(output).not.toContain(
+      '{"status":"success","summary":"Split into one implementation task for the first eval runner slice.',
+    );
+    expect(output).not.toContain(
+      '{"status":"success","summary":"Verified the local eval runner end to end',
+    );
+    expect(output.startsWith('\n')).toBe(false);
   });
 
   test('renders harness event timelines in verbose TTY mode', () => {
@@ -398,10 +1131,20 @@ describe('rendering', () => {
         isTTY: true,
         write: chunk => chunks.push(String(chunk)),
       },
-      verbose: true,
+      verbosity: 2,
     });
 
+    const task = {
+      attempt: 1,
+      detail: 'planner',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Ready to run.',
+      total: 1,
+    };
     const step = {detail: 'planner', label: 'task-planner'};
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.onEvent({
       command: 'rg "specops-e2e" .agentq',
@@ -413,16 +1156,18 @@ describe('rendering', () => {
       status: 'success',
       summary: 'Ready to run.',
     });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Ready to run.',
+    });
     renderer.stop();
 
     const output = chunks.join('');
-    expect(output).toContain('task-planner planner');
+    expect(output).toContain('task-planner  planner');
     expect(output).toContain(
-      'agent task-planner planner --:--  tool  exec_command: rg "specops-e2e"',
+      'agent planner --:--  tool  exec_command: rg "specops-e2e" .agentq',
     );
-    expect(output).toContain(
-      'harness done task-planner planner - Ready to run.',
-    );
+    expect(output).toContain('✓ task 1/1 success retry 1/1  Ready to run.');
   });
 
   test('renders harness agent messages in verbose mode', () => {
@@ -432,10 +1177,20 @@ describe('rendering', () => {
       stream: {
         write: chunk => chunks.push(String(chunk)),
       },
-      verbose: true,
+      verbosity: 1,
     });
 
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
     const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
     renderer.startStep(step);
     renderer.onEvent({
       kind: 'assistant_message',
@@ -446,9 +1201,481 @@ describe('rendering', () => {
       status: 'success',
       summary: 'Done.',
     });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
 
     expect(chunks.join('')).toContain(
-      'agent builder task-001.attempt-001.worker --:--  message  I am checking the harness configuration before editing.',
+      '  trace  I am checking the harness configuration before editing.',
     );
+    expect(chunks.join('')).toContain('▸ worker  builder');
+    expect(chunks.join('')).toContain('✓ worker  builder  Done.');
+    expect(chunks.join('')).not.toContain('agent builder --:-- message');
+  });
+
+  test('renders retry 1/8 through retry 8/8 without an off-by-one budget', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runId: 'devloop-a0d2b5',
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 8,
+      summary: 'Refine default live-row activity rendering',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-builder',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'checking the renderer',
+      provider: 'codex',
+    });
+    task.attempt = 8;
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'applying reviewer feedback',
+      provider: 'codex',
+    });
+    renderer.stop();
+
+    const output = chunks.join('');
+    expect(output).toContain(
+      'devloop-a0d2b5 task 1/1 retry 1/8  harness-builder  checking the renderer',
+    );
+    expect(output).toContain(
+      'devloop-a0d2b5 task 1/1 retry 8/8  harness-builder  applying reviewer feedback',
+    );
+    expect(output).not.toContain('attempt 1/9');
+  });
+
+  test('renders token summaries once in verbose harness output', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbosity: 1,
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'token_usage',
+      provider: 'codex',
+      tokenUsage: {
+        cachedInputTokens: 12,
+        inputTokens: 100,
+        outputTokens: 20,
+        reasoningOutputTokens: 5,
+        totalTokens: 137,
+      },
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
+
+    const output = chunks.join('');
+    expect(output).toContain(
+      'tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137',
+    );
+    const matches =
+      output.match(
+        /tokens: input 100 · output 20 · cached 12 · reasoning 5 · total 137/g,
+      ) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  test('default harness jsonl omits nested agent lifecycle events', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      format: 'jsonl',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'run_started',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'I am checking the harness configuration before editing.',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      kind: 'run_completed',
+      message: 'Done.',
+      provider: 'codex',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.stop({
+      durationMs: 123,
+      status: 'success',
+      summary: 'Harness work completed successfully.',
+    });
+
+    const events = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .filter(line => line.length > 0)
+      .map(line => JSON.parse(line) as {type: string});
+
+    expect(events.map(event => event.type)).toEqual([
+      'harness.started',
+      'task.started',
+      'task.finished',
+      'harness.finished',
+    ]);
+  });
+
+  test('default harness jsonl keeps successful task summaries on the item title', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      format: 'jsonl',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      detail: 'task-001.attempt-001.worker',
+      index: 3,
+      label: 'item',
+      summary: 'Fix renderer duplication',
+      total: 8,
+    };
+    const step = {detail: 'task-001.attempt-001.worker', label: 'build'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Loop devloop completed successfully.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Loop devloop completed successfully.',
+    });
+    renderer.stop({
+      durationMs: 123,
+      status: 'success',
+      summary: 'Harness work completed successfully.',
+    });
+
+    const events = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .filter(line => line.length > 0)
+      .map(line => JSON.parse(line) as {summary?: string; type: string});
+
+    expect(events.find(event => event.type === 'task.finished')).toMatchObject({
+      summary: 'Fix renderer duplication',
+      type: 'task.finished',
+    });
+  });
+
+  test('default harness jsonl reports standalone step failures', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      format: 'jsonl',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const step = {detail: 'split', label: 'splitter'};
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      command: 'bun -e process.exit(1)',
+      durable: false,
+      exitCode: 1,
+      stderrTail: 'boom',
+      status: 'failed',
+      stdoutTail: 'noise',
+      summary: 'The plan is invalid.',
+    });
+    renderer.stop({
+      durationMs: 123,
+      status: 'failed',
+      summary: 'Harness work failed.',
+    });
+
+    const events = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .filter(line => line.length > 0)
+      .map(
+        line =>
+          JSON.parse(line) as {
+            command?: string;
+            exitCode?: number;
+            stderrTail?: string;
+            stdoutTail?: string;
+            type: string;
+          },
+      );
+
+    expect(events.map(event => event.type)).toEqual([
+      'harness.started',
+      'step.finished',
+      'harness.finished',
+    ]);
+    const stepFinished = events.find(event => event.type === 'step.finished');
+    expect(stepFinished).toMatchObject({
+      status: 'failed',
+      summary: 'The plan is invalid.',
+      type: 'step.finished',
+    });
+    expect(stepFinished).not.toMatchObject({
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      stderrTail: 'boom',
+      stdoutTail: 'noise',
+    });
+  });
+
+  test('renders verbose harness jsonl step and assistant events once', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      format: 'jsonl',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbosity: 1,
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message: 'I am checking the harness configuration before editing.',
+      provider: 'codex',
+    });
+    renderer.onEvent({
+      kind: 'token_usage',
+      provider: 'codex',
+      tokenUsage: {
+        cachedInputTokens: 12,
+        inputTokens: 100,
+        outputTokens: 20,
+        reasoningOutputTokens: 5,
+        totalTokens: 137,
+      },
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.stop({
+      durationMs: 123,
+      status: 'success',
+      summary: 'Harness work completed successfully.',
+    });
+
+    const events = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .filter(line => line.length > 0)
+      .map(line => JSON.parse(line) as {type: string});
+
+    expect(events.map(event => event.type)).toEqual([
+      'harness.started',
+      'task.started',
+      'step.started',
+      'assistant_message',
+      'token_usage',
+      'step.finished',
+      'task.finished',
+      'harness.finished',
+    ]);
+    expect(events.find(event => event.type === 'task.started')).toMatchObject({
+      task: {
+        attempt: 1,
+        maxAttempts: 1,
+        retryIndex: 1,
+        retryTotal: 1,
+      },
+    });
+    expect(events.find(event => event.type === 'task.finished')).toMatchObject({
+      task: {
+        attempt: 1,
+        maxAttempts: 1,
+        retryIndex: 1,
+        retryTotal: 1,
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      durationMs: 123,
+      status: 'success',
+      type: 'harness.finished',
+    });
+  });
+
+  test('renders verbose harness jsonl diagnostics at debug level', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      format: 'jsonl',
+      stream: {
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbosity: 2,
+    });
+
+    const task = {
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      summary: 'Build failed.',
+      total: 1,
+    };
+    const step = {detail: 'task-001.attempt-001.worker', label: 'builder'};
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      command: 'bun -e process.exit(1)',
+      kind: 'tool_started',
+      provider: 'codex',
+      rawType: 'item.started',
+      toolName: 'exec_command',
+    });
+    renderer.onEvent({
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      kind: 'tool_finished',
+      provider: 'codex',
+      rawType: 'item.completed',
+      status: 'failed',
+      toolName: 'exec_command',
+    });
+    renderer.finishStep(step, {
+      agentRunDir: '/home/me/.agentq/runs/builder-abc123',
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      stderrTail: 'boom',
+      status: 'failed',
+      stdoutTail: 'noise',
+      summary: 'Build failed.',
+    });
+    renderer.finishTask(task, {
+      agentRunDir: '/home/me/.agentq/runs/builder-abc123',
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      stderrTail: 'boom',
+      status: 'failed',
+      stdoutTail: 'noise',
+      summary: 'Build failed.',
+    });
+    renderer.stop({
+      durationMs: 123,
+      status: 'failed',
+      summary: 'Harness work failed.',
+    });
+
+    const events = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .filter(line => line.length > 0)
+      .map(
+        line =>
+          JSON.parse(line) as {
+            command?: string;
+            exitCode?: number;
+            rawType?: string;
+            stderrTail?: string;
+            stdoutTail?: string;
+            type: string;
+          },
+      );
+
+    expect(events.find(event => event.type === 'step.finished')).toMatchObject({
+      agentRunDir: '/home/me/.agentq/runs/builder-abc123',
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      stderrTail: 'boom',
+      stdoutTail: 'noise',
+      type: 'step.finished',
+    });
+    expect(
+      events.find(event => event.rawType === 'item.completed'),
+    ).toMatchObject({
+      command: 'bun -e process.exit(1)',
+      exitCode: 1,
+      rawType: 'item.completed',
+      type: 'tool_finished',
+    });
   });
 });

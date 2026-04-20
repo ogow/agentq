@@ -3,7 +3,11 @@ import {readFile} from 'node:fs/promises';
 import yargs from 'yargs';
 import {hideBin} from 'yargs/helpers';
 import {AgentQError} from './core/errors';
-import {listRunHistory, parseRunLookbackMs} from './core/history';
+import {
+  inspectRunHistory,
+  listRunHistory,
+  parseRunLookbackMs,
+} from './core/history';
 import {
   formatHarnessSummary,
   followHarnessLogEvents,
@@ -12,18 +16,30 @@ import {
   readHarnessLogEvents,
   runHarness,
 } from './core/harness';
-import {formatRunHistoryTable, formatRunSummary} from './core/render';
+import {
+  formatEvalRunInspection,
+  formatEvalRunSummary,
+  inspectEvalRun,
+  runEval,
+} from './eval';
+import {
+  formatRunHistoryTable,
+  formatRunInspection,
+  formatRunSummary,
+} from './core/render';
 import {listAgents} from './core/paths';
 import {runAgent} from './core/run';
 import {formatWorkStatus, listWorkStatus, stopWork} from './core/status';
 import type {RunMetadata} from './core/metadata';
 import type {
   ApprovalPolicy,
+  OutputFormat,
   LogLevel,
   ProviderId,
   ReasoningEffort,
   ResultMode,
   SandboxMode,
+  Verbosity,
 } from './core/types';
 
 const LOG_LEVEL_CHOICES = [
@@ -106,15 +122,18 @@ export function buildCli(argv: string[]) {
                 describe: 'Colorize terminal output',
                 type: 'boolean',
               })
-              .option('verbose', {
+              .option('jsonl', {
                 default: false,
-                describe: 'Stream agent activity while steps run',
+                describe: 'Stream JSON Lines instead of human output',
                 type: 'boolean',
               })
+              .alias('verbose', 'v')
+              .count('verbose')
               .option('log-level', {
                 choices: LOG_LEVEL_CHOICES,
+                hidden: true,
                 describe:
-                  'Run logging: progress, messages, verbose, json, or json-messages',
+                  'Compatibility logging mode: progress, messages, verbose, json, or json-messages',
                 type: 'string',
               })
               .check(argv => {
@@ -126,17 +145,21 @@ export function buildCli(argv: string[]) {
                 return true;
               }),
           async argv => {
+            const jsonOutput = isJsonOutputMode(argv.jsonl, argv.logLevel);
             const result = await runHarness({
               color: argv.color,
+              format: outputFormatFromArg(argv.jsonl),
               inputFile: argv.inputFile,
               inputText: argv.inputText,
               logLevel: logLevelFromArg(argv.logLevel, argv.verbose),
               name: String(argv.name),
               projectCwd: process.cwd(),
-              verbose: argv.verbose,
+              verbosity: verbosityFromArg(argv.logLevel, argv.verbose),
             });
 
-            process.stdout.write(`${formatHarnessSummary(result)}\n`);
+            if (!jsonOutput) {
+              process.stdout.write(`${formatHarnessSummary(result)}\n`);
+            }
             if (result.status !== 'success') {
               process.exitCode = 1;
             }
@@ -206,6 +229,46 @@ export function buildCli(argv: string[]) {
           },
         )
         .demandCommand(1, 'Choose a harness command.'),
+    )
+    .command('eval <command>', 'Run and inspect local eval packs', command =>
+      command
+        .command(
+          'run <pack>',
+          'Run an eval pack',
+          builder =>
+            builder.positional('pack', {
+              describe: 'Eval pack name or path',
+              type: 'string',
+            }),
+          async argv => {
+            const result = await runEval({
+              pack: String(argv.pack),
+              projectCwd: process.cwd(),
+            });
+
+            process.stdout.write(`${formatEvalRunSummary(result)}\n`);
+            if (result.status !== 'success') {
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          'inspect <run>',
+          'Inspect a saved eval run',
+          builder =>
+            builder.positional('run', {
+              describe: 'Eval run id or directory',
+              type: 'string',
+            }),
+          async argv => {
+            const result = await inspectEvalRun(String(argv.run));
+            process.stdout.write(`${formatEvalRunInspection(result)}\n`);
+            if (result.status !== 'success') {
+              process.exitCode = 1;
+            }
+          },
+        )
+        .demandCommand(1, 'Choose an eval command.'),
     )
     .command(
       'run <agent>',
@@ -283,23 +346,30 @@ export function buildCli(argv: string[]) {
             describe: 'Print detailed run metadata and artifact paths',
             type: 'boolean',
           })
-          .option('verbose', {
+          .option('jsonl', {
             default: false,
-            describe: 'Stream JSONL-derived activity while the run is active',
+            describe: 'Stream JSON Lines instead of human output',
             type: 'boolean',
           })
+          .alias('verbose', 'v')
+          .count('verbose')
           .option('log-level', {
             choices: LOG_LEVEL_CHOICES,
+            hidden: true,
             describe:
-              'Run logging: progress, messages, verbose, json, or json-messages',
+              'Compatibility logging mode: progress, messages, verbose, json, or json-messages',
             type: 'string',
           }),
       async argv => {
         const agentId = String(argv.agent);
         const logLevel = logLevelFromArg(argv.logLevel, argv.verbose);
+        const verbosity = verbosityFromArg(argv.logLevel, argv.verbose);
+        const format = outputFormatFromArg(argv.jsonl);
+        const jsonOutput = isJsonOutputMode(argv.jsonl, argv.logLevel);
         const result = await runAgent({
           agentId,
           color: argv.color,
+          format,
           logLevel,
           overrides: {
             approval: argv.approval as ApprovalPolicy | undefined,
@@ -313,13 +383,15 @@ export function buildCli(argv: string[]) {
           },
           projectCwd: process.cwd(),
           task: argv.task,
-          verbose: argv.verbose,
+          verbosity,
         });
 
-        await printRunSummary(result, {
-          color: argv.color,
-          details: argv.details || logLevel === 'verbose',
-        });
+        if (!jsonOutput) {
+          await printRunSummary(result, {
+            color: argv.color,
+            details: argv.details || verbosity >= 2,
+          });
+        }
 
         if (result.status !== 'succeeded') {
           process.exitCode = 1;
@@ -364,53 +436,82 @@ export function buildCli(argv: string[]) {
       },
     )
     .command(
-      'runs list',
-      'List previous runs',
+      'runs <command>',
+      'List and inspect previous agent runs',
       command =>
         command
-          .option('since', {
-            describe:
-              'Only show runs from the last duration, such as 1h, 7d, or 2w',
-            type: 'string',
-          })
-          .option('limit', {
-            default: 20,
-            describe: 'Maximum number of runs to show',
-            type: 'number',
-          })
-          .option('color', {
-            describe: 'Colorize terminal output',
-            type: 'boolean',
-          })
-          .check(argv => {
-            if (
-              !Number.isInteger(argv.limit) ||
-              argv.limit === undefined ||
-              argv.limit <= 0
-            ) {
-              throw new AgentQError('--limit must be a positive integer.');
-            }
-            return true;
-          }),
-      async argv => {
-        const since = argv.since ? String(argv.since) : undefined;
-        const limit = Number(argv.limit);
-        const runs = await listRunHistory({
-          limit,
-          sinceMs: since ? parseRunLookbackMs(since) : undefined,
-        });
+          .command(
+            'list',
+            'List previous runs',
+            command =>
+              command
+                .option('since', {
+                  describe:
+                    'Only show runs from the last duration, such as 1h, 7d, or 2w',
+                  type: 'string',
+                })
+                .option('limit', {
+                  default: 20,
+                  describe: 'Maximum number of runs to show',
+                  type: 'number',
+                })
+                .option('color', {
+                  describe: 'Colorize terminal output',
+                  type: 'boolean',
+                })
+                .check(argv => {
+                  if (
+                    !Number.isInteger(argv.limit) ||
+                    argv.limit === undefined ||
+                    argv.limit <= 0
+                  ) {
+                    throw new AgentQError(
+                      '--limit must be a positive integer.',
+                    );
+                  }
+                  return true;
+                }),
+            async argv => {
+              const since = argv.since ? String(argv.since) : undefined;
+              const limit = Number(argv.limit);
+              const runs = await listRunHistory({
+                limit,
+                sinceMs: since ? parseRunLookbackMs(since) : undefined,
+              });
 
-        process.stdout.write(
-          `${formatRunHistoryTable(
-            runs.map(run => run.metadata),
-            {
-              color: argv.color,
-              limit,
-              since,
+              process.stdout.write(
+                `${formatRunHistoryTable(
+                  runs.map(run => run.metadata),
+                  {
+                    color: argv.color,
+                    limit,
+                    since,
+                  },
+                )}\n`,
+              );
             },
-          )}\n`,
-        );
-      },
+          )
+          .command(
+            'inspect <run>',
+            'Inspect a previous agent run',
+            command =>
+              command
+                .positional('run', {
+                  describe: 'Agent run id or directory',
+                  type: 'string',
+                })
+                .option('color', {
+                  describe: 'Colorize terminal output',
+                  type: 'boolean',
+                }),
+            async argv => {
+              const inspection = await inspectRunHistory(String(argv.run));
+              process.stdout.write(
+                `${formatRunInspection(inspection, {color: argv.color})}\n`,
+              );
+            },
+          )
+          .demandCommand(1, 'Choose a runs command.'),
     )
     .command(
       'agents list',
@@ -443,10 +544,48 @@ export function buildCli(argv: string[]) {
 
 function logLevelFromArg(
   logLevel: string | undefined,
-  verbose: boolean | undefined,
+  verbose: number | boolean | undefined,
 ): LogLevel | undefined {
   if (logLevel) {
     return logLevel as LogLevel;
   }
-  return verbose ? 'verbose' : undefined;
+  return typeof verbose === 'number' && verbose > 0
+    ? verbose > 1
+      ? 'verbose'
+      : 'messages'
+    : verbose
+      ? 'verbose'
+      : undefined;
+}
+
+function verbosityFromArg(
+  logLevel: string | undefined,
+  verbose: number | boolean | undefined,
+): Verbosity {
+  if (logLevel === 'verbose') {
+    return 2;
+  }
+  if (logLevel === 'messages') {
+    return 1;
+  }
+  if (logLevel === 'json' || logLevel === 'json-messages') {
+    return 1;
+  }
+  if (typeof verbose === 'number') {
+    return verbose >= 2 ? 2 : verbose >= 1 ? 1 : 0;
+  }
+  return verbose ? 1 : 0;
+}
+
+function outputFormatFromArg(
+  jsonl: boolean | undefined,
+): OutputFormat | undefined {
+  return jsonl ? 'jsonl' : undefined;
+}
+
+function isJsonOutputMode(
+  jsonl: boolean | undefined,
+  logLevel: string | undefined,
+): boolean {
+  return jsonl === true || logLevel === 'json' || logLevel === 'json-messages';
 }

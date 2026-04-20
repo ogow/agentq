@@ -2,11 +2,11 @@
 id: harness-reviewer
 description: Reviews one AgentQ repo harness attempt and returns AgentOutput JSON.
 provider: codex
-model: gpt-5.4-mini
-reasoning: medium
+model: gpt-5.4
+reasoning: high
 result_mode: json
 sandbox: read-only
-timeout: 10m
+timeout: 30m
 ---
 
 <instructions>

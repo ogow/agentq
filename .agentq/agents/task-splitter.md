@@ -3,10 +3,10 @@ id: task-splitter
 description: Splits an AgentQ repo request into stable loop items.
 provider: codex
 model: gpt-5.4-mini
-reasoning: medium
+reasoning: high
 result_mode: json
 sandbox: read-only
-timeout: 10m
+timeout: 15m
 ---
 
 <instructions>

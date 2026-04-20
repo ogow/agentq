@@ -3,10 +3,13 @@ import cliSpinners from 'cli-spinners';
 import type {
   AgentQEvent,
   ChangedFileSummary,
+  OutputFormat,
   LogLevel,
   RunStatus,
+  Verbosity,
 } from './types';
 import type {RunMetadata} from './metadata';
+import type {RunInspection} from './history';
 
 type ChalkStyle = typeof chalkStderr;
 
@@ -21,23 +24,40 @@ export interface ProgressRenderer {
 }
 
 export interface HarnessProgressStep {
+  activity?: string;
   detail?: string;
   label: string;
 }
 
 export interface HarnessProgressResult {
+  agentRunDir?: string;
+  command?: string;
+  exitCode?: number | null;
+  durable?: boolean;
+  durationMs?: number;
+  stderrTail?: string;
+  stdoutTail?: string;
   status: 'success' | 'failed' | 'blocked';
   summary?: string;
+  result?: unknown;
+  step?: HarnessProgressStep;
 }
 
 export interface HarnessProgressRenderer {
+  finishTask: (task: HarnessTaskContext, result: HarnessProgressResult) => void;
   finishStep: (
     step: HarnessProgressStep,
     result: HarnessProgressResult,
   ) => void;
   onEvent: (event: AgentQEvent) => void;
+  startTask: (task: HarnessTaskContext) => void;
   startStep: (step: HarnessProgressStep) => void;
-  stop: () => void;
+  stop: (result?: {
+    durationMs?: number;
+    status?: string;
+    summary?: string;
+    step?: HarnessProgressStep;
+  }) => void;
 }
 
 interface RenderOptions {
@@ -47,15 +67,22 @@ interface RenderOptions {
 
 interface ProgressOptions extends RenderOptions {
   agentId: string;
+  format?: OutputFormat;
   logLevel?: LogLevel;
   progress?: boolean;
   stream?: RenderStream;
+  verbosity?: Verbosity;
   verbose?: boolean;
 }
 
 interface HarnessProgressOptions extends RenderOptions {
+  format?: OutputFormat;
+  harnessName?: string;
   logLevel?: LogLevel;
+  runDir?: string;
+  runId?: string;
   stream?: RenderStream;
+  verbosity?: Verbosity;
   verbose?: boolean;
 }
 
@@ -65,28 +92,42 @@ interface StructuredLogContext {
   step?: HarnessProgressStep;
 }
 
+interface HarnessTaskContext {
+  attempt?: number;
+  detail?: string;
+  index: number;
+  label: string;
+  maxAttempts?: number;
+  summary?: string;
+  total: number;
+}
+
 export function createProgressRenderer({
   agentId,
   color,
+  format,
   logLevel,
   progress = true,
-  stream = process.stderr,
+  stream,
+  verbosity,
   verbose,
 }: ProgressOptions): ProgressRenderer {
   const style = createStyle(color);
-  const level = resolveLogLevel(logLevel, verbose);
+  const mode = resolveOutputMode({format, logLevel, verbosity, verbose});
+  const outputStream =
+    stream ?? (mode.format === 'jsonl' ? process.stdout : process.stderr);
 
   if (!progress) {
     return noopProgressRenderer();
   }
 
-  if (level === 'json' || level === 'json-messages') {
+  if (mode.format === 'jsonl') {
     return {
       onEvent: event => {
-        if (level === 'json-messages' && !isAssistantMessage(event)) {
+        if (!shouldEmitAgentJsonlEvent(event, mode.verbosity)) {
           return;
         }
-        stream.write(
+        outputStream.write(
           `${formatStructuredLogEvent(event, {agentId, source: 'agent'})}\n`,
         );
       },
@@ -94,31 +135,31 @@ export function createProgressRenderer({
     };
   }
 
-  if (level === 'messages') {
+  if (mode.verbosity === 1) {
     return {
       onEvent: event => {
         const line = formatMessageLogEvent(event, {color});
         if (line) {
-          stream.write(`${line}\n`);
+          outputStream.write(`${line}\n`);
         }
       },
       stop: () => undefined,
     };
   }
 
-  if (level === 'verbose') {
+  if (mode.verbosity === 2) {
     return {
       onEvent: event => {
         const line = formatTimelineEvent(event, {color});
         if (line) {
-          stream.write(`${line}\n`);
+          outputStream.write(`${line}\n`);
         }
       },
       stop: () => undefined,
     };
   }
 
-  if (!stream.isTTY) {
+  if (!outputStream.isTTY) {
     return {
       onEvent: () => undefined,
       stop: () => undefined,
@@ -135,9 +176,7 @@ export function createProgressRenderer({
 
   const clearLine = () => {
     if (lastPlainLength > 0) {
-      stream.write('\r');
-      stream.write(' '.repeat(lastPlainLength));
-      stream.write('\r');
+      outputStream.write('\r\x1b[2K');
       lastPlainLength = 0;
     }
   };
@@ -150,9 +189,7 @@ export function createProgressRenderer({
       style.cyan(frames[index]),
       style.white(detail),
     ].join(' ');
-    stream.write(
-      `\r${line}${' '.repeat(Math.max(0, lastPlainLength - plain.length))}`,
-    );
+    outputStream.write(`\r\x1b[2K${line}`);
     lastPlainLength = plain.length;
   };
 
@@ -162,38 +199,28 @@ export function createProgressRenderer({
     render();
   }, spinner.interval);
 
-  const writePersistentEvent = (event: AgentQEvent): boolean => {
-    const label = eventLabel(event);
-    const eventDetail = formatProgressDetail(event);
-
-    if (!eventDetail || (label !== 'message' && label !== 'fail')) {
-      return false;
-    }
-
-    clearLine();
-    stream.write(
-      `${style.dim('agent')} ${agentId}  ${style.dim(label)}  ${eventDetail}\n`,
-    );
-    render();
-    return true;
-  };
-
   return {
     onEvent: event => {
       const eventDetail = formatProgressDetail(event);
-      if (event.kind === 'token_usage' && eventDetail) {
+      if (mode.verbosity >= 1 && event.kind === 'token_usage' && eventDetail) {
         tokenSummary = eventDetail;
       }
-      detail = eventDetail ?? detail;
-      if (!writePersistentEvent(event)) {
-        render();
+      if (
+        event.kind !== 'assistant_message' &&
+        event.kind !== 'token_usage' &&
+        eventDetail
+      ) {
+        detail = eventDetail;
       }
+      render();
     },
     stop: () => {
       clearInterval(interval);
       clearLine();
-      if (tokenSummary) {
-        stream.write(`${style.dim('agent')} ${agentId}  ${tokenSummary}\n`);
+      if (mode.verbosity >= 1 && tokenSummary) {
+        outputStream.write(
+          `${style.dim('agent')} ${agentId}  ${tokenSummary}\n`,
+        );
       }
     },
   };
@@ -201,220 +228,461 @@ export function createProgressRenderer({
 
 export function createHarnessProgressRenderer({
   color,
+  format,
+  harnessName,
   logLevel,
-  stream = process.stderr,
+  runDir,
+  runId,
+  stream,
+  verbosity,
   verbose,
 }: HarnessProgressOptions = {}): HarnessProgressRenderer {
   const style = createStyle(color);
-  const level = resolveLogLevel(logLevel, verbose);
+  const mode = resolveOutputMode({format, logLevel, verbosity, verbose});
+  const outputStream =
+    stream ?? (mode.format === 'jsonl' ? process.stdout : process.stderr);
+  const harnessTitle = [harnessName, runId].filter(Boolean).join(' ');
+  const harnessPath = runDir ? style.dim(runDir) : undefined;
 
-  if (level === 'json' || level === 'json-messages') {
-    let current: HarnessProgressStep | undefined;
-    const writeStepEvent = (
-      kind: 'harness_step_started' | 'harness_step_finished',
-      step: HarnessProgressStep,
-      result?: HarnessProgressResult,
-    ) => {
-      if (level !== 'json') {
-        return;
-      }
-      stream.write(
-        `${JSON.stringify({
-          detail: step.detail,
-          kind,
-          label: step.label,
-          source: 'harness',
-          status: result?.status,
-          summary: result?.summary,
-        })}\n`,
-      );
-    };
-
+  if (mode.format === 'jsonl') {
+    let currentTask: HarnessTaskContext | undefined;
+    let currentStep: HarnessProgressStep | undefined;
+    outputStream.write(
+      `${JSON.stringify(
+        formatHarnessJsonlEvent(
+          'harness.started',
+          {
+            harnessName,
+            runDir,
+            runId,
+          },
+          mode.verbosity,
+        ),
+      )}\n`,
+    );
     return {
+      finishTask: (task, result) => {
+        outputStream.write(
+          `${JSON.stringify(
+            formatHarnessJsonlEvent(
+              'task.finished',
+              {
+                harnessName,
+                result,
+                runDir,
+                runId,
+                step: currentStep ?? result.step,
+                task,
+              },
+              mode.verbosity,
+            ),
+          )}\n`,
+        );
+        currentTask = undefined;
+      },
       finishStep: (step, result) => {
-        writeStepEvent('harness_step_finished', step, result);
-        current = undefined;
+        if (
+          mode.verbosity >= 1 ||
+          (!currentTask && result.status !== 'success')
+        ) {
+          outputStream.write(
+            `${JSON.stringify(
+              formatHarnessJsonlEvent(
+                'step.finished',
+                {
+                  harnessName,
+                  result,
+                  runDir,
+                  runId,
+                  step,
+                  task: currentTask,
+                },
+                mode.verbosity,
+              ),
+            )}\n`,
+          );
+        }
+        currentStep = undefined;
       },
       onEvent: event => {
-        if (level === 'json-messages' && !isAssistantMessage(event)) {
+        if (!shouldEmitHarnessJsonlEvent(event, mode.verbosity)) {
           return;
         }
-        stream.write(
-          `${formatStructuredLogEvent(event, {
-            source: 'agent',
-            step: current,
-          })}\n`,
-        );
-      },
-      startStep: step => {
-        current = step;
-        writeStepEvent('harness_step_started', step);
-      },
-      stop: () => undefined,
-    };
-  }
-
-  if (level === 'messages') {
-    let current: HarnessProgressStep | undefined;
-    return {
-      finishStep: () => {
-        current = undefined;
-      },
-      onEvent: event => {
-        const line = formatMessageLogEvent(event, {
-          color,
-          prefix: current
-            ? `agent ${formatHarnessProgressLabel(current)}`
-            : 'agent',
-        });
-        if (line) {
-          stream.write(`${line}\n`);
-        }
-      },
-      startStep: step => {
-        current = step;
-      },
-      stop: () => undefined,
-    };
-  }
-
-  if (level === 'verbose') {
-    let current: HarnessProgressStep | undefined;
-    return {
-      finishStep: (step, result) => {
-        current = undefined;
-        const suffix = result.summary ? ` - ${result.summary}` : '';
-        stream.write(
-          `${style.dim('harness')} ${statusLabel(result.status, style)} ${formatHarnessProgressLabel(
-            step,
-          )}${suffix}\n`,
-        );
-      },
-      onEvent: event => {
-        const line = formatTimelineEvent(event, {color});
-        if (line) {
-          const prefix = current
-            ? `${style.dim('agent')} ${formatHarnessProgressLabel(current)}`
-            : style.dim('agent');
-          stream.write(`${prefix} ${line}\n`);
-        }
-      },
-      startStep: step => {
-        current = step;
-        stream.write(
-          `${style.dim('harness')} ${style.cyan('start')} ${formatHarnessProgressLabel(
-            step,
+        outputStream.write(
+          `${JSON.stringify(
+            formatHarnessJsonlEvent(
+              'event',
+              {
+                event,
+                harnessName,
+                runDir,
+                runId,
+                step: currentStep,
+                task: currentTask,
+              },
+              mode.verbosity,
+            ),
           )}\n`,
         );
       },
+      startTask: task => {
+        currentTask = task;
+        outputStream.write(
+          `${JSON.stringify(
+            formatHarnessJsonlEvent(
+              'task.started',
+              {
+                harnessName,
+                runDir,
+                runId,
+                task,
+              },
+              mode.verbosity,
+            ),
+          )}\n`,
+        );
+      },
+      startStep: step => {
+        currentStep = step;
+        if (mode.verbosity >= 1) {
+          outputStream.write(
+            `${JSON.stringify(
+              formatHarnessJsonlEvent(
+                'step.started',
+                {
+                  harnessName,
+                  runDir,
+                  runId,
+                  step,
+                  task: currentTask,
+                },
+                mode.verbosity,
+              ),
+            )}\n`,
+          );
+        }
+      },
+      stop: result => {
+        if (!result) {
+          return;
+        }
+        outputStream.write(
+          `${JSON.stringify(
+            formatHarnessJsonlEvent(
+              'harness.finished',
+              {
+                harnessName,
+                result,
+                runDir,
+                runId,
+                step: currentStep ?? result.step,
+              },
+              mode.verbosity,
+            ),
+          )}\n`,
+        );
+      },
+    };
+  }
+
+  if (mode.verbosity >= 1) {
+    let currentTokenSummary: string | undefined;
+    let currentTask: HarnessTaskContext | undefined;
+    let currentStep: HarnessProgressStep | undefined;
+    let printedRunHeader = false;
+    const renderRunHeader = () => {
+      if (printedRunHeader || !runId) {
+        return;
+      }
+      printedRunHeader = true;
+      outputStream.write(`${style.bold(runId)}\n`);
+    };
+    return {
+      finishTask: (task, result) => {
+        const finishedStep = currentStep;
+        const tokenSummary =
+          mode.verbosity >= 1 ? currentTokenSummary : undefined;
+        currentTask = undefined;
+        currentStep = undefined;
+        currentTokenSummary = undefined;
+        outputStream.write(
+          `${formatHarnessCompletionLine(task, result, style, {
+            tokenSummary,
+          })}\n`,
+        );
+        if (result.status !== 'success') {
+          outputStream.write(
+            `${formatHarnessFailureBlock(task, result, style, {
+              harnessPath,
+              harnessTitle,
+              step: finishedStep,
+              verbosity: mode.verbosity,
+            })}\n`,
+          );
+        }
+      },
+      finishStep: (step, result) => {
+        const tokenSummary =
+          mode.verbosity >= 1 ? currentTokenSummary : undefined;
+        currentStep = undefined;
+        currentTokenSummary = undefined;
+        outputStream.write(
+          `${formatHarnessStepLine(step, result, style, {
+            compactStep: mode.verbosity === 1,
+            tokenSummary,
+          })}\n`,
+        );
+        if (
+          result.status !== 'success' &&
+          (mode.verbosity >= 2 || !currentTask)
+        ) {
+          outputStream.write(
+            `${formatHarnessFailureBlock(undefined, result, style, {
+              harnessPath,
+              harnessTitle,
+              step,
+              verbosity: mode.verbosity,
+            })}\n`,
+          );
+        }
+      },
+      onEvent: event => {
+        const line = formatHarnessVerboseEvent(event, {
+          color,
+          step: currentStep,
+          verbosity: mode.verbosity,
+        });
+        if (line) {
+          outputStream.write(`${line}\n`);
+          return;
+        }
+        if (mode.verbosity >= 1 && event.kind === 'token_usage') {
+          currentTokenSummary = formatTokenUsageSummary(event.tokenUsage, {
+            compact: true,
+          });
+          return;
+        }
+      },
+      startTask: task => {
+        renderRunHeader();
+        currentTask = task;
+        currentTokenSummary = undefined;
+        outputStream.write(`${formatHarnessStartLine(task, style)}\n`);
+      },
+      startStep: step => {
+        renderRunHeader();
+        currentStep = step;
+        currentTokenSummary = undefined;
+        outputStream.write(
+          `${formatHarnessStepStartLine(step, style, {
+            compactStep: mode.verbosity === 1,
+          })}\n`,
+        );
+      },
       stop: () => undefined,
     };
   }
 
-  if (!stream.isTTY) {
-    return noopHarnessProgressRenderer();
+  if (!outputStream.isTTY) {
+    let currentTask: HarnessTaskContext | undefined;
+    let currentStep: HarnessProgressStep | undefined;
+    return {
+      finishTask: (task, result) => {
+        const finishedStep = result.step ?? currentStep;
+        currentTask = undefined;
+        currentStep = undefined;
+        outputStream.write(
+          `${formatHarnessCompletionLine(task, result, style)}\n`,
+        );
+        if (result.status !== 'success') {
+          outputStream.write(
+            `${formatHarnessFailureBlock(task, result, style, {
+              harnessPath,
+              harnessTitle,
+              step: finishedStep,
+              verbosity: mode.verbosity,
+            })}\n`,
+          );
+        }
+      },
+      finishStep: (step, result) => {
+        currentStep = step;
+        if (result.status !== 'success' && !currentTask) {
+          outputStream.write(
+            `${formatHarnessFailureBlock(undefined, result, style, {
+              harnessPath,
+              harnessTitle,
+              step,
+              verbosity: mode.verbosity,
+            })}\n`,
+          );
+          return;
+        }
+        if (result.status !== 'success' && result.durable === false) {
+          return;
+        }
+        currentStep = undefined;
+      },
+      onEvent: () => undefined,
+      startTask: task => {
+        currentTask = task;
+        currentStep = undefined;
+      },
+      startStep: step => {
+        currentStep = step;
+      },
+      stop: () => undefined,
+    };
   }
 
   const spinner = cliSpinners.dots;
   const frames = spinner.frames;
-  let current: HarnessProgressStep | undefined;
-  let currentActivity: string | undefined;
-  let currentTokenSummary: string | undefined;
+  let currentTask: HarnessTaskContext | undefined;
+  let currentStep: HarnessProgressStep | undefined;
+  let currentAssistantActivity: string | undefined;
+  let currentFallbackActivity: string | undefined;
+  let currentRetryActivity: string | undefined;
   let index = 0;
   let lastPlainLength = 0;
-
-  const render = () => {
-    if (!current) {
-      return;
-    }
-
-    const detail = formatHarnessProgressDetail(current, currentActivity);
-    const plain = `${frames[index]} ${current.label} ${detail ?? ''}`.trim();
-    const line = [
-      style.cyan(frames[index]),
-      style.white(current.label),
-      detail ? style.dim(detail) : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    stream.write(
-      `\r${line}${' '.repeat(Math.max(0, lastPlainLength - plain.length))}`,
-    );
-    lastPlainLength = plain.length;
-  };
-
-  const clearLine = () => {
-    if (lastPlainLength > 0) {
-      stream.write('\r');
-      stream.write(' '.repeat(lastPlainLength));
-      stream.write('\r');
-      lastPlainLength = 0;
-    }
-  };
-
   const interval = setInterval(() => {
     index = (index + 1) % frames.length;
     render();
   }, spinner.interval);
 
-  const writePersistentEvent = (event: AgentQEvent): boolean => {
-    if (!current) {
-      return false;
+  const clearLine = () => {
+    if (lastPlainLength > 0) {
+      outputStream.write('\r\x1b[2K');
+      lastPlainLength = 0;
+    }
+  };
+
+  const render = () => {
+    if (!currentTask) {
+      return;
     }
 
-    const label = eventLabel(event);
-    const detail = formatProgressDetail(event);
-
-    if (!detail || (label !== 'message' && label !== 'fail')) {
-      return false;
-    }
-
-    clearLine();
-    stream.write(
-      `${style.dim('agent')} ${formatHarnessProgressLabel(current)}  ${style.dim(
-        label,
-      )}  ${detail}\n`,
+    const line = formatHarnessActiveLine(
+      runId ?? harnessName ?? 'harness',
+      currentTask,
+      currentStep,
+      resolveHarnessLiveActivity({
+        assistantActivity: currentAssistantActivity,
+        fallbackActivity: currentFallbackActivity,
+        retryActivity: currentRetryActivity,
+      }),
+      frames[index],
+      style,
     );
-    render();
-    return true;
+    outputStream.write(`\r\x1b[2K${line}`);
+    lastPlainLength = plainLength(line);
   };
 
   return {
+    finishTask: (task, result) => {
+      const finishedStep = result.step ?? currentStep;
+      clearLine();
+      currentTask = undefined;
+      currentStep = undefined;
+      currentAssistantActivity = undefined;
+      currentFallbackActivity = undefined;
+      currentRetryActivity = undefined;
+      outputStream.write(
+        `${formatHarnessCompletionLine(task, result, style)}\n`,
+      );
+      if (result.status !== 'success') {
+        outputStream.write(
+          `${formatHarnessFailureBlock(task, result, style, {
+            harnessPath,
+            harnessTitle,
+            step: finishedStep,
+          })}\n`,
+        );
+      }
+    },
     finishStep: (step, result) => {
       clearLine();
-      current = undefined;
-      currentActivity = undefined;
-      const tokenSummary = currentTokenSummary;
-      currentTokenSummary = undefined;
-      const summary = result.summary ? style.dim(` - ${result.summary}`) : '';
-      const tokenLine = tokenSummary ? style.dim(` · ${tokenSummary}`) : '';
-      stream.write(
-        `${statusGlyph(result.status, style)} ${style.white(
-          step.label,
-        )}${step.detail ? ` ${style.dim(step.detail)}` : ''}${summary}${tokenLine}\n`,
-      );
+      if (result.status !== 'success' && !currentTask) {
+        outputStream.write(
+          `${formatHarnessFailureBlock(undefined, result, style, {
+            harnessPath,
+            harnessTitle,
+            step,
+          })}\n`,
+        );
+        return;
+      }
+      if (result.status !== 'success' && result.durable === false) {
+        currentRetryActivity = 'retrying';
+        render();
+        return;
+      }
+      currentStep = undefined;
+      currentAssistantActivity = undefined;
+      currentFallbackActivity = undefined;
+      currentRetryActivity = undefined;
+      if (result.status !== 'success' || mode.verbosity >= 2) {
+        outputStream.write(
+          `${formatHarnessStepLine(step, result, style, {
+            compactStep: true,
+          })}\n`,
+        );
+      }
+      render();
     },
     onEvent: event => {
-      const detail = formatProgressDetail(event);
-      if (event.kind === 'token_usage' && detail) {
-        currentTokenSummary = detail;
+      if (mode.verbosity >= 1) {
+        const line = formatHarnessVerboseEvent(event, {
+          color,
+          step: currentStep,
+          verbosity: mode.verbosity,
+        });
+        if (line) {
+          clearLine();
+          outputStream.write(`${line}\n`);
+          render();
+          return;
+        }
       }
-      currentActivity = detail ?? currentActivity;
-      if (!writePersistentEvent(event)) {
-        render();
+      if (event.kind === 'assistant_message') {
+        currentAssistantActivity = formatAssistantMessagePreview(event, 80);
+        currentRetryActivity = undefined;
+      } else if (event.kind === 'tool_started') {
+        currentFallbackActivity ??= 'working';
+      } else if (event.kind === 'tool_finished') {
+        currentRetryActivity =
+          event.status === 'failed' ? 'retrying' : undefined;
       }
+      render();
     },
-    startStep: step => {
-      current = step;
-      currentActivity = undefined;
-      currentTokenSummary = undefined;
+    startTask: task => {
+      currentTask = task;
+      currentStep = undefined;
+      currentAssistantActivity = undefined;
+      currentFallbackActivity = undefined;
+      currentRetryActivity = undefined;
       index = 0;
       render();
     },
+    startStep: step => {
+      currentStep = step;
+      currentAssistantActivity = undefined;
+      currentFallbackActivity = 'working';
+      currentRetryActivity = undefined;
+      if (mode.verbosity >= 1) {
+        clearLine();
+        outputStream.write(
+          `${formatHarnessStepStartLine(step, style, {compactStep: true})}\n`,
+        );
+        render();
+      } else {
+        render();
+      }
+    },
     stop: () => {
-      clearInterval(interval);
+      if (interval) {
+        clearInterval(interval);
+      }
       clearLine();
-      currentTokenSummary = undefined;
     },
   };
 }
@@ -463,6 +731,470 @@ export function formatStructuredLogEvent(
   });
 }
 
+function resolveOutputMode(options: {
+  format?: OutputFormat;
+  logLevel?: LogLevel;
+  verbosity?: Verbosity;
+  verbose?: boolean | number;
+}): {format: OutputFormat; verbosity: Verbosity} {
+  const verbosity = normalizeVerbosity(
+    options.verbosity ??
+      (typeof options.verbose === 'number'
+        ? options.verbose
+        : options.verbose
+          ? 1
+          : undefined),
+  );
+  if (options.format) {
+    return {format: options.format, verbosity};
+  }
+
+  if (options.logLevel === 'json' || options.logLevel === 'json-messages') {
+    return {
+      format: 'jsonl',
+      verbosity:
+        options.logLevel === 'json-messages'
+          ? normalizeVerbosity(Math.max(verbosity, 1))
+          : verbosity,
+    };
+  }
+  if (options.logLevel === 'messages') {
+    return {
+      format: 'human',
+      verbosity: normalizeVerbosity(Math.max(verbosity, 1)),
+    };
+  }
+  if (options.logLevel === 'verbose') {
+    return {format: 'human', verbosity: 2};
+  }
+  return {
+    format: 'human',
+    verbosity,
+  };
+}
+
+function normalizeVerbosity(value: unknown): Verbosity {
+  if (value === 2 || value === '2') {
+    return 2;
+  }
+  if (value === 1 || value === '1' || value === true) {
+    return 1;
+  }
+  return 0;
+}
+
+function shouldEmitAgentJsonlEvent(
+  event: AgentQEvent,
+  verbosity: Verbosity,
+): boolean {
+  if (verbosity >= 2) {
+    return true;
+  }
+  if (event.kind === 'run_started' || event.kind === 'run_completed') {
+    return true;
+  }
+  if (event.kind === 'failure') {
+    return true;
+  }
+  if (event.kind === 'assistant_message' || event.kind === 'token_usage') {
+    return verbosity >= 1;
+  }
+  if (event.kind === 'tool_started') {
+    return verbosity >= 2;
+  }
+  if (event.kind === 'tool_finished') {
+    return verbosity >= 2;
+  }
+  return false;
+}
+
+function shouldEmitHarnessJsonlEvent(
+  event: AgentQEvent,
+  verbosity: Verbosity,
+): boolean {
+  if (verbosity >= 2) {
+    return true;
+  }
+  if (
+    (event.kind === 'run_started' || event.kind === 'run_completed') &&
+    verbosity >= 1
+  ) {
+    return true;
+  }
+  if (event.kind === 'failure') {
+    return verbosity >= 1;
+  }
+  if (event.kind === 'assistant_message' || event.kind === 'token_usage') {
+    return verbosity >= 1;
+  }
+  if (event.kind === 'tool_started') {
+    return verbosity >= 2;
+  }
+  if (event.kind === 'tool_finished') {
+    return verbosity >= 2;
+  }
+  return false;
+}
+
+function formatHarnessJsonlEvent(
+  type:
+    | 'harness.started'
+    | 'event'
+    | 'harness.finished'
+    | 'step.finished'
+    | 'step.started'
+    | 'task.finished'
+    | 'task.started',
+  context: {
+    event?: AgentQEvent;
+    harnessName?: string;
+    result?: {
+      agentRunDir?: string;
+      command?: string;
+      durationMs?: number;
+      exitCode?: number | null;
+      stderrTail?: string;
+      status?: string;
+      stdoutTail?: string;
+      summary?: string;
+      step?: HarnessProgressStep;
+    };
+    runDir?: string;
+    runId?: string;
+    step?: HarnessProgressStep;
+    task?: HarnessTaskContext;
+  },
+  verbosity: Verbosity,
+): Record<string, unknown> {
+  if (type === 'event') {
+    const event = context.event;
+    return {
+      callId: verbosity >= 2 ? event?.callId : undefined,
+      command: verbosity >= 2 ? event?.command : undefined,
+      detail: context.step?.detail,
+      exitCode: verbosity >= 2 ? event?.exitCode : undefined,
+      files: verbosity >= 2 ? event?.files : undefined,
+      label: context.step?.label,
+      message: event?.message,
+      phase: event?.phase,
+      status: event?.status,
+      step: context.step?.label,
+      task: context.task?.summary ?? context.task?.detail,
+      rawType: verbosity >= 2 ? event?.rawType : undefined,
+      timestamp: event?.timestamp,
+      tokenUsage: event?.tokenUsage,
+      toolName: event?.toolName,
+      type: event?.kind ?? 'unknown',
+    };
+  }
+
+  const result = context.result;
+  const includeDiagnostics = verbosity >= 2;
+  const step = context.step ?? result?.step;
+  const summary =
+    result?.status === 'success'
+      ? (context.task?.summary ?? result?.summary)
+      : (result?.summary ?? context.task?.summary);
+  return {
+    agentRunDir: includeDiagnostics ? result?.agentRunDir : undefined,
+    harness: context.harnessName,
+    durationMs: context.result?.durationMs,
+    command: includeDiagnostics ? result?.command : undefined,
+    exitCode: includeDiagnostics ? result?.exitCode : undefined,
+    runDir: context.runDir,
+    runId: context.runId,
+    status: context.result?.status,
+    summary,
+    step: step?.label,
+    stderrTail: includeDiagnostics ? result?.stderrTail : undefined,
+    stdoutTail: includeDiagnostics ? result?.stdoutTail : undefined,
+    task: context.task
+      ? {
+          attempt: context.task.attempt,
+          detail: context.task.detail,
+          index: context.task.index,
+          label: context.task.label,
+          retryIndex: context.task.attempt,
+          retryTotal: context.task.maxAttempts,
+          maxAttempts: context.task.maxAttempts,
+          summary: context.task.summary,
+          total: context.task.total,
+        }
+      : undefined,
+    type,
+  };
+}
+
+function formatHarnessStartLine(
+  task: HarnessTaskContext,
+  style: ChalkStyle,
+): string {
+  const parts = [
+    style.bold(taskLabel(task)),
+    style.dim(retryLabel(task)),
+    task.summary ? style.white(task.summary) : '',
+  ].filter(Boolean);
+  return parts.length > 0
+    ? `${style.dim('▸')} ${parts.join('  ')}`
+    : style.dim('▸');
+}
+
+function formatHarnessCompletionLine(
+  task: HarnessTaskContext,
+  result: HarnessProgressResult,
+  style: ChalkStyle,
+  options: {tokenSummary?: string} = {},
+): string {
+  const summary = compact(
+    task.summary ?? result.summary ?? task.detail ?? '',
+    120,
+  );
+  const suffix = summary ? ` ${summary}` : '';
+  const tokenSuffix = options.tokenSummary ? ` · ${options.tokenSummary}` : '';
+  return [
+    statusGlyph(result.status, style),
+    style.white(taskLabel(task)),
+    style.dim(result.status),
+    style.dim(retryLabel(task)),
+    suffix ? style.white(suffix) : '',
+    tokenSuffix ? style.dim(tokenSuffix) : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function formatHarnessFailureBlock(
+  task: HarnessTaskContext | undefined,
+  result: HarnessProgressResult,
+  style: ChalkStyle,
+  options: {
+    harnessPath?: string;
+    harnessTitle?: string;
+    step?: HarnessProgressStep;
+    verbosity?: Verbosity;
+  } = {},
+): string {
+  const lines = [style.bold('Failure')];
+  const includeDiagnostics = (options.verbosity ?? 0) >= 2;
+  const stepText = options.step
+    ? includeDiagnostics
+      ? stepLabel(options.step)
+      : options.step.label
+    : includeDiagnostics
+      ? (result.step?.detail ?? task?.detail)
+      : humanizeStepId(result.step?.detail ?? task?.detail);
+  if (!task && stepText) {
+    lines.push(`  step: ${stepText}`);
+  }
+  if (options.step?.label ?? result.step?.label) {
+    lines.push(`  agent: ${options.step?.label ?? result.step?.label}`);
+  }
+  if (task) {
+    lines.push(`  retry: ${retryProgress(task)}`);
+  }
+  if (result.summary) {
+    lines.push(`  reason: ${result.summary}`);
+  }
+  if (includeDiagnostics && result.command) {
+    lines.push(`  command: ${compact(result.command, 120)}`);
+  }
+  if (includeDiagnostics && result.exitCode !== undefined) {
+    lines.push(`  exit: ${String(result.exitCode)}`);
+  }
+  if (options.harnessPath) {
+    lines.push(`  run: ${options.harnessPath}`);
+  }
+  if (includeDiagnostics && result.stderrTail) {
+    lines.push(`  stderr: ${compact(result.stderrTail, 120)}`);
+  }
+  if (includeDiagnostics && result.stdoutTail) {
+    lines.push(`  stdout: ${compact(result.stdoutTail, 120)}`);
+  }
+  return lines.join('\n');
+}
+
+function formatHarnessStepStartLine(
+  step: HarnessProgressStep,
+  style: ChalkStyle,
+  options: {compactStep?: boolean} = {},
+): string {
+  const primary = options.compactStep ? stepName(step) : step.label;
+  const secondary = options.compactStep ? step.label : step.detail;
+  const parts = [
+    style.white(primary),
+    secondary ? style.dim(secondary) : '',
+  ].filter(Boolean);
+  return parts.length > 0
+    ? `${style.dim('▸')} ${parts.join('  ')}`
+    : style.dim('▸');
+}
+
+function formatHarnessStepLine(
+  step: HarnessProgressStep,
+  result: HarnessProgressResult,
+  style: ChalkStyle,
+  options: {compactStep?: boolean; tokenSummary?: string} = {},
+): string {
+  const primary = options.compactStep ? stepName(step) : step.label;
+  const secondary = options.compactStep ? step.label : step.detail;
+  const summary =
+    (result.status === 'success'
+      ? formatHarnessOutputSummary(result.result)
+      : undefined) ??
+    result.summary ??
+    step.detail ??
+    step.label;
+  const tokenSuffix = options.tokenSummary ? ` · ${options.tokenSummary}` : '';
+  const parts = [
+    style.white(primary),
+    secondary ? style.dim(secondary) : '',
+    summary ? style.white(summary) : '',
+    tokenSuffix ? style.dim(tokenSuffix) : '',
+  ].filter(Boolean);
+  return parts.length > 0
+    ? `${statusGlyph(result.status, style)} ${parts.join('  ')}`
+    : statusGlyph(result.status, style);
+}
+
+function formatHarnessVerboseEvent(
+  event: AgentQEvent,
+  options: {
+    color?: boolean;
+    step?: HarnessProgressStep;
+    verbosity: Verbosity;
+  },
+): string | undefined {
+  if (event.kind === 'assistant_message') {
+    if (looksLikeAgentOutput(event.message)) {
+      return undefined;
+    }
+
+    if (options.verbosity >= 2) {
+      const prefix = options.step
+        ? `agent ${
+            options.verbosity >= 2
+              ? stepLabel(options.step)
+              : options.step.label
+          }`
+        : 'agent';
+      return formatMessageLogEvent(event, {color: options.color, prefix});
+    }
+
+    return formatHarnessTraceLine(event, {color: options.color});
+  }
+
+  if (options.verbosity < 2) {
+    return undefined;
+  }
+
+  const line = formatTimelineEvent(event, {color: options.color});
+  if (!line) {
+    return undefined;
+  }
+
+  return options.step
+    ? `${stylePrefix(options.color, options.step)} ${line}`
+    : line;
+}
+
+function formatHarnessTraceLine(
+  event: AgentQEvent,
+  options: RenderOptions = {},
+): string | undefined {
+  const message = formatAssistantMessagePreview(event, 120);
+  if (!message) {
+    return undefined;
+  }
+
+  const style = createStyle(options.color);
+  return [style.dim('  trace'), style.dim(compact(message, 120))]
+    .filter(Boolean)
+    .join('  ');
+}
+
+function formatHarnessActiveLine(
+  runId: string,
+  task: HarnessTaskContext,
+  step: HarnessProgressStep | undefined,
+  activity: string | undefined,
+  frame: string,
+  style: ChalkStyle,
+): string {
+  const agent = step?.label ?? 'waiting';
+  const activityText = activity ? compact(activity, 80) : 'running';
+  const head = [
+    style.cyan(frame),
+    style.bold(runId),
+    style.dim(taskLabel(task)),
+    style.dim(retryLabel(task)),
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return [head, style.white(agent), style.dim(activityText)]
+    .filter(Boolean)
+    .join('  ');
+}
+
+function resolveHarnessLiveActivity(state: {
+  assistantActivity?: string;
+  fallbackActivity?: string;
+  retryActivity?: string;
+}): string | undefined {
+  return (
+    state.retryActivity ??
+    state.assistantActivity ??
+    state.fallbackActivity ??
+    'working'
+  );
+}
+
+function taskLabel(task: HarnessTaskContext): string {
+  return `task ${task.index}/${task.total}`;
+}
+
+function retryLabel(task: HarnessTaskContext): string {
+  return `retry ${retryProgress(task)}`;
+}
+
+function retryProgress(task: HarnessTaskContext): string {
+  return `${task.attempt ?? 1}/${task.maxAttempts ?? 1}`;
+}
+
+function stepLabel(step: HarnessProgressStep): string {
+  return step.detail ?? step.label;
+}
+
+function humanizeStepId(stepId: string | undefined): string | undefined {
+  if (!stepId) {
+    return undefined;
+  }
+
+  return stepId
+    .split('.')
+    .filter(part => !/^attempt-\d+$/.test(part))
+    .join('.');
+}
+
+function stepName(step: HarnessProgressStep): string {
+  return (
+    compact(step.detail ?? step.label, 64)
+      .split('.')
+      .at(-1) ?? step.label
+  );
+}
+
+function stylePrefix(
+  color: boolean | undefined,
+  step: HarnessProgressStep,
+): string {
+  const style = createStyle(color);
+  return `${style.dim('agent')} ${style.dim(stepLabel(step))}`;
+}
+
+function plainLength(value: string): number {
+  return value.length;
+}
+
 export function formatRunSummary(
   metadata: RunMetadata,
   output: string,
@@ -473,6 +1205,36 @@ export function formatRunSummary(
   }
 
   return formatDetailedRunSummary(metadata, output, options);
+}
+
+export function formatRunInspection(
+  inspection: RunInspection,
+  options: RenderOptions = {},
+): string {
+  const style = createStyle(options.color);
+  const metadata = inspection.metadata;
+  const rows = [
+    row('agent id', metadata.agent.id),
+    row('status', statusText(metadata.status, style)),
+    row('duration', formatDuration(metadata.durationMs)),
+    row('model', metadata.config.model),
+    row('reasoning', metadata.config.reasoning),
+    row('sandbox', metadata.config.sandbox),
+    ...(metadata.config.approval
+      ? [row('approval', metadata.config.approval)]
+      : []),
+    row('run dir', inspection.runDir),
+    row('tools', summarizeTools(metadata.toolUsage)),
+    row('edits', summarizeFiles(metadata.changedFiles)),
+  ];
+  const sections = [
+    box('Run Inspection', rows, style),
+    formatChangedFiles(metadata.changedFiles, style),
+    formatInspectionFailure(metadata, style),
+    formatInspectionOutput(inspection.output, style),
+  ].filter(section => section.length > 0);
+
+  return sections.join('\n\n');
 }
 
 export function formatRunHistoryTable(
@@ -655,24 +1417,21 @@ function createStyle(color?: boolean): ChalkStyle {
   return chalkStderr;
 }
 
-function resolveLogLevel(
-  logLevel: LogLevel | undefined,
-  verbose: boolean | undefined,
-): LogLevel {
-  return logLevel ?? (verbose ? 'verbose' : 'progress');
-}
-
 function formatProgressDetail(event: AgentQEvent): string | undefined {
   if (event.kind === 'run_started') {
     return 'loaded agent and started run';
   }
 
   if (event.kind === 'assistant_message') {
-    return formatAssistantMessage(event, 120);
+    return formatAssistantMessage(event, 80);
   }
 
   if (event.kind === 'tool_started') {
-    return undefined;
+    return event.command
+      ? compact(event.command, 80)
+      : event.toolName
+        ? `${event.toolName} started`
+        : undefined;
   }
 
   if (event.kind === 'tool_finished') {
@@ -755,36 +1514,70 @@ function formatAssistantMessage(
   return event.phase ? `[${event.phase}] ${message}` : message;
 }
 
+function formatAssistantMessagePreview(
+  event: AgentQEvent,
+  maxLength: number,
+): string | undefined {
+  if (!event.message) {
+    return undefined;
+  }
+
+  return compact(event.message, maxLength);
+}
+
+function formatHarnessOutputSummary(result: unknown): string | undefined {
+  if (!isRecord(result)) {
+    return undefined;
+  }
+
+  const tasks = result.tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    return undefined;
+  }
+
+  const firstTitle = tasks
+    .map(task =>
+      isRecord(task) && typeof task.title === 'string' ? task.title.trim() : '',
+    )
+    .find(title => title.length > 0);
+  const count = tasks.length;
+  const title = firstTitle ? `: ${compact(firstTitle, 80)}` : '';
+  return `${count} task${count === 1 ? '' : 's'}${title}`;
+}
+
+function looksLikeAgentOutput(message: string | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const trimmed = message.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return (
+      isRecord(parsed) &&
+      typeof parsed.status === 'string' &&
+      typeof parsed.summary === 'string'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function isAssistantMessage(event: AgentQEvent): boolean {
   return event.kind === 'assistant_message' && Boolean(event.message);
-}
-
-function formatHarnessProgressLabel(step: HarnessProgressStep): string {
-  return step.detail ? `${step.label} ${step.detail}` : step.label;
-}
-
-function formatHarnessProgressDetail(
-  step: HarnessProgressStep,
-  activity: string | undefined,
-): string | undefined {
-  if (step.detail && activity) {
-    return `${step.detail}: ${activity}`;
-  }
-  return activity ?? step.detail;
 }
 
 function noopProgressRenderer(): ProgressRenderer {
   return {
     onEvent: () => undefined,
-    stop: () => undefined,
-  };
-}
-
-function noopHarnessProgressRenderer(): HarnessProgressRenderer {
-  return {
-    finishStep: () => undefined,
-    onEvent: () => undefined,
-    startStep: () => undefined,
     stop: () => undefined,
   };
 }
@@ -800,19 +1593,6 @@ function statusGlyph(
     return style.yellow('!');
   }
   return style.red('✗');
-}
-
-function statusLabel(
-  status: HarnessProgressResult['status'],
-  style: ChalkStyle,
-): string {
-  if (status === 'success') {
-    return style.green('done');
-  }
-  if (status === 'blocked') {
-    return style.yellow('blocked');
-  }
-  return style.red('failed');
 }
 
 function eventLabel(event: AgentQEvent): string | undefined {
@@ -983,6 +1763,38 @@ function formatFailure(metadata: RunMetadata, style: ChalkStyle): string {
   return lines.join('\n');
 }
 
+function formatInspectionFailure(
+  metadata: RunMetadata,
+  style: ChalkStyle,
+): string {
+  if (!metadata.failure) {
+    return '';
+  }
+
+  const lines = [
+    style.red.bold('Failure'),
+    `  kind      ${metadata.failure.kind}`,
+    `  message   ${metadata.failure.message}`,
+  ];
+
+  if (
+    metadata.failure.exitCode !== undefined &&
+    metadata.failure.exitCode !== null
+  ) {
+    lines.push(`  exit code ${metadata.failure.exitCode}`);
+  }
+
+  if (metadata.failure.timedOut) {
+    lines.push('  timed out true');
+  }
+
+  if (metadata.failure.stderrTail) {
+    lines.push('', style.dim(indent(metadata.failure.stderrTail)));
+  }
+
+  return lines.join('\n');
+}
+
 function formatArtifacts(metadata: RunMetadata, style: ChalkStyle): string {
   return [
     style.bold('Artifacts'),
@@ -1001,6 +1813,15 @@ function formatOutput(output: string, style: ChalkStyle): string {
   return [style.bold('Final output'), output.trim()].join('\n');
 }
 
+function formatInspectionOutput(output: string, style: ChalkStyle): string {
+  const preview = previewText(output, 20, 1200);
+  if (preview.length === 0) {
+    return '';
+  }
+
+  return [style.bold('Final output'), preview].join('\n');
+}
+
 function compact(value: string, maxLength: number): string {
   const oneLine = value.trim().replace(/\s+/g, ' ');
   if (oneLine.length <= maxLength) {
@@ -1008,6 +1829,30 @@ function compact(value: string, maxLength: number): string {
   }
 
   return `${oneLine.slice(0, maxLength - 3)}...`;
+}
+
+function previewText(
+  value: string,
+  maxLines: number,
+  maxChars: number,
+): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return '';
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  let preview = lines.slice(0, maxLines).join('\n');
+
+  if (preview.length > maxChars) {
+    preview = `${preview.slice(0, maxChars - 3).trimEnd()}...`;
+  }
+
+  if (lines.length > maxLines) {
+    preview = `${preview}\n...`;
+  }
+
+  return preview;
 }
 
 function indent(value: string): string {

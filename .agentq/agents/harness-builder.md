@@ -6,7 +6,7 @@ model: gpt-5.4-mini
 reasoning: high
 result_mode: json
 sandbox: danger-full-access
-timeout: 30m
+timeout: 1h
 ---
 
 <instructions>

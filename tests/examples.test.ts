@@ -38,7 +38,7 @@ describe('harness examples', () => {
     };
 
     try {
-      const result = await runHarness({
+      const {result} = await runHarnessWithOutput({
         inputText: 'do it',
         name: 'work',
         projectCwd,
@@ -65,7 +65,7 @@ describe('harness examples', () => {
 
     try {
       await expect(
-        runHarness({
+        runHarnessWithOutput({
           inputText: 'do it',
           name: 'work',
           projectCwd,
@@ -79,6 +79,74 @@ describe('harness examples', () => {
     }
   });
 });
+
+async function runHarnessWithOutput(
+  request: Parameters<typeof runHarness>[0],
+): Promise<{
+  result: Awaited<ReturnType<typeof runHarness>>;
+  stderr: string;
+  stdout: string;
+}> {
+  const capture = captureOutput();
+  try {
+    const result = await runHarness(request);
+    return {
+      result,
+      stderr: capture.stderrChunks.join(''),
+      stdout: capture.stdoutChunks.join(''),
+    };
+  } finally {
+    capture.restore();
+  }
+}
+
+function captureOutput(): {
+  restore: () => void;
+  stderrChunks: string[];
+  stdoutChunks: string[];
+} {
+  const stdout = process.stdout as typeof process.stdout & {
+    write: typeof process.stdout.write;
+  };
+  const stderr = process.stderr as typeof process.stderr & {
+    write: typeof process.stderr.write;
+  };
+  const originalStdoutWrite = stdout.write.bind(process.stdout);
+  const originalStderrWrite = stderr.write.bind(process.stderr);
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+
+  Object.defineProperty(stdout, 'write', {
+    configurable: true,
+    value: ((chunk: unknown) => {
+      stdoutChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write,
+  });
+
+  Object.defineProperty(stderr, 'write', {
+    configurable: true,
+    value: ((chunk: unknown) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write,
+  });
+
+  return {
+    restore: () => {
+      Object.defineProperty(stdout, 'write', {
+        configurable: true,
+        value: originalStdoutWrite,
+      });
+      Object.defineProperty(stderr, 'write', {
+        configurable: true,
+        value: originalStderrWrite,
+      });
+    },
+    stderrChunks,
+    stdoutChunks,
+  };
+}
 
 async function writeAgent(projectCwd: string): Promise<void> {
   const agentsDir = join(projectCwd, '.agentq', 'agents');

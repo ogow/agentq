@@ -62,6 +62,7 @@ export async function runAgent(
     const providerResult = await provider.run(prepared, {
       agentId: prepared.agent.id,
       color: request.color,
+      format: request.format,
       logLevel: request.logLevel,
       onEvent: request.onEvent,
       onSpawn: async process => {
@@ -74,6 +75,7 @@ export async function runAgent(
       processRegistry: request.processRegistry,
       progress: request.progress,
       runtimeParent: request.runtimeParent,
+      verbosity: request.verbosity,
       verbose: request.verbose,
     });
     const completedAt = new Date();

@@ -11,9 +11,11 @@ import {currentHost, killProcessTree} from '../core/processes';
 import {createProgressRenderer} from '../core/render';
 import type {
   AgentQEvent,
+  OutputFormat,
   LogLevel,
   PreparedRun,
   ProviderRunResult,
+  Verbosity,
 } from '../core/types';
 import type {ProcessRegistry} from '../core/processes';
 import type {ProgressRenderer} from '../core/render';
@@ -25,6 +27,7 @@ export class CodexProvider implements AgentProvider {
     options: {
       agentId: string;
       color?: boolean;
+      format?: OutputFormat;
       logLevel?: LogLevel;
       onEvent?: (event: AgentQEvent) => void;
       onSpawn?: (process: {
@@ -35,6 +38,7 @@ export class CodexProvider implements AgentProvider {
       }) => void | Promise<void>;
       processRegistry?: ProcessRegistry;
       progress?: boolean;
+      verbosity?: Verbosity;
       verbose?: boolean;
     },
   ): Promise<ProviderRunResult> {
@@ -84,13 +88,21 @@ export class CodexProvider implements AgentProvider {
       void killProcessTree(proc);
     }, prepared.config.timeoutMs);
 
-    const progress = createProgressRenderer({
-      agentId: options.agentId,
-      color: options.color,
-      logLevel: options.logLevel,
-      progress: options.progress,
-      verbose: options.verbose,
-    });
+    const progress =
+      options.progress === false
+        ? {
+            onEvent: () => undefined,
+            stop: () => undefined,
+          }
+        : createProgressRenderer({
+            agentId: options.agentId,
+            color: options.color,
+            format: options.format,
+            logLevel: options.logLevel,
+            progress: options.progress,
+            verbosity: options.verbosity,
+            verbose: options.verbose,
+          });
     const stdoutPump = pumpStdout(
       proc.stdout,
       prepared.paths.stdoutPath,

@@ -49,6 +49,10 @@ export type ReasoningEffort =
 
 export type ResultMode = 'plain' | 'json';
 
+export type OutputFormat = 'human' | 'jsonl';
+
+export type Verbosity = 0 | 1 | 2;
+
 export type LogLevel =
   | 'progress'
   | 'messages'
@@ -118,6 +122,7 @@ export interface RunPaths {
 export interface RunRequest {
   agentId: string;
   color?: boolean;
+  format?: OutputFormat;
   logLevel?: LogLevel;
   onEvent?: (event: AgentQEvent) => void;
   overrides?: RunOverrides;
@@ -126,6 +131,7 @@ export interface RunRequest {
   progress?: boolean;
   projectCwd: string;
   task: string;
+  verbosity?: Verbosity;
   verbose?: boolean;
 }
 

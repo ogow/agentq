@@ -17,6 +17,8 @@ import {resolveHarnessRunDir} from './harness-paths';
 import {currentHost, ProcessRegistry} from './processes';
 import {
   createHarnessProgressRenderer,
+  type HarnessProgressStep,
+  type HarnessProgressResult,
   type HarnessProgressRenderer,
 } from './render';
 import {runAgent} from './run';
@@ -26,10 +28,12 @@ import type {
   AgentOutput,
   ArtifactRef,
   FailureKind,
+  OutputFormat,
   HarnessStepStatus,
   LogLevel,
   ProcessMetadata,
   StepResult,
+  Verbosity,
 } from './types';
 
 type HarnessCommand = string | string[];
@@ -101,6 +105,7 @@ export interface HarnessListEntry {
 
 export interface HarnessRunRequest {
   color?: boolean;
+  format?: OutputFormat;
   inputFile?: string;
   inputText?: string;
   inputs?: Record<string, unknown>;
@@ -108,6 +113,7 @@ export interface HarnessRunRequest {
   name: string;
   projectCwd: string;
   provider?: AgentProvider;
+  verbosity?: Verbosity;
   verbose?: boolean;
 }
 
@@ -118,6 +124,7 @@ export interface HarnessRunResult {
   feedback?: AgentFeedback | null;
   finishedAt: string;
   harnessName: string;
+  completedItems: number;
   iterations: number;
   runDir: string;
   startedAt: string;
@@ -130,6 +137,7 @@ export interface HarnessAttemptRecord {
   agentRunDir?: string;
   attempt: number;
   checks: HarnessCheckResult[];
+  failedStep?: HarnessProgressStep;
   failureKind?: FailureKind;
   feedback?: AgentFeedback | null;
   finishedAt?: string;
@@ -239,7 +247,12 @@ export async function runHarness(
 
   const progress = createHarnessProgressRenderer({
     color: request.color,
+    format: request.format,
+    harnessName: definition.name,
     logLevel: request.logLevel,
+    runDir: paths.runDir,
+    runId: basename(paths.runDir),
+    verbosity: request.verbosity,
     verbose: request.verbose,
   });
   const processRegistry = new ProcessRegistry();
@@ -251,9 +264,22 @@ export async function runHarness(
   globalThis.process.on('SIGINT', interrupt);
   globalThis.process.on('SIGTERM', interrupt);
 
+  let result: HarnessRunResult | undefined;
   try {
     if (definition.steps) {
-      return await runHarnessSteps({
+      result = await runHarnessSteps({
+        definition,
+        interruptState,
+        paths,
+        processRegistry,
+        progress,
+        provider: request.provider,
+        request,
+        startedAt,
+        state,
+      });
+    } else {
+      result = await runHarnessAttempts({
         definition,
         interruptState,
         paths,
@@ -265,22 +291,12 @@ export async function runHarness(
         state,
       });
     }
-    return await runHarnessAttempts({
-      definition,
-      interruptState,
-      paths,
-      processRegistry,
-      progress,
-      provider: request.provider,
-      request,
-      startedAt,
-      state,
-    });
+    return result!;
   } finally {
     globalThis.process.off('SIGINT', interrupt);
     globalThis.process.off('SIGTERM', interrupt);
     await processRegistry.killAll();
-    progress.stop();
+    progress.stop(result);
   }
 }
 
@@ -300,6 +316,7 @@ export async function inspectHarnessRun(
     feedback: state.attempts.at(-1)?.feedback ?? null,
     finishedAt: state.finishedAt ?? new Date().toISOString(),
     harnessName: state.harnessName,
+    completedItems: countCompletedHarnessItemsFromState(state, state.status),
     iterations: state.attempts.length,
     runDir: state.runDir,
     startedAt: state.startedAt,
@@ -310,14 +327,19 @@ export async function inspectHarnessRun(
 }
 
 export function formatHarnessSummary(result: HarnessRunResult): string {
-  const lines = [
-    `Harness ${result.harnessName}: ${result.status}`,
-    `attempts: ${result.iterations}`,
-    `summary: ${result.summary}`,
-  ];
-  if (result.failedStep) {
-    lines.push(`failed step: ${result.failedStep}`);
+  const lines = [`${result.harnessName}: ${result.status}`];
+  if (result.status === 'running') {
+    lines.push('running');
+    lines.push(`duration: ${formatDuration(result.durationMs)}`);
+    lines.push(`run: ${result.runDir}`);
+    return lines.join('\n');
   }
+  if (result.status === 'success') {
+    lines.push(`tasks: ${result.completedItems} succeeded`);
+  } else {
+    lines.push(result.summary ? `failed: ${result.summary}` : 'failed');
+  }
+  lines.push(`duration: ${formatDuration(result.durationMs)}`);
   if (result.feedback) {
     lines.push(`feedback: ${formatFeedback(result.feedback)}`);
   }
@@ -359,7 +381,7 @@ export function formatHarnessLogEvent(
 
   const timestamp = timestampLabel(event.timestamp);
   const status = event.status ?? '';
-  const actor = event.agent ?? event.stepId;
+  const actor = event.agent ?? humanizeHarnessStepId(event.stepId);
   const summary = event.summary ?? event.message ?? '';
   return [timestamp, actor, status, summary].filter(Boolean).join('  ');
 }
@@ -430,8 +452,26 @@ async function runHarnessSteps(options: {
   let failedStep: string | undefined;
   let feedback: AgentFeedback | null = null;
   let summary = `Harness ${options.definition.name} completed successfully.`;
+  let lastStepResult: StepResult | undefined;
+  const hasLoopStep = (options.definition.steps ?? []).some(
+    step => step.kind === 'loop',
+  );
+  const wholeHarnessTask = hasLoopStep
+    ? undefined
+    : {
+        attempt: 1,
+        detail: undefined as string | undefined,
+        index: 1,
+        label: 'item',
+        maxAttempts: 1,
+        summary: options.definition.name,
+        total: 1,
+      };
 
   try {
+    if (wholeHarnessTask) {
+      options.progress.startTask(wholeHarnessTask);
+    }
     for (const step of options.definition.steps ?? []) {
       if (options.interruptState.interrupted) {
         terminalStatus = 'interrupted';
@@ -474,6 +514,10 @@ async function runHarnessSteps(options: {
         [step.id]: result,
       };
       await writeHarnessState(options.paths, options.state);
+      lastStepResult = result;
+      if (wholeHarnessTask) {
+        wholeHarnessTask.detail = step.id;
+      }
 
       if (options.interruptState.interrupted) {
         terminalStatus = 'interrupted';
@@ -497,6 +541,14 @@ async function runHarnessSteps(options: {
       ? `Harness ${options.definition.name} was interrupted and active processes were stopped.`
       : `Harness failed: ${errorMessage(error)}`;
     feedback = {problem: summary};
+  }
+
+  if (wholeHarnessTask) {
+    options.progress.finishTask(wholeHarnessTask, {
+      ...harnessProgressResultFromStepResult(lastStepResult),
+      status: terminalStatus === 'interrupted' ? 'failed' : terminalStatus,
+      summary,
+    });
   }
 
   return finishHarnessRun({
@@ -533,9 +585,22 @@ async function runLoopStep(options: {
   for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
     const loopItem = items[itemIndex];
     const maxAttempts = options.loop.retries + 1;
+    const task = {
+      attempt: 1,
+      detail: undefined as string | undefined,
+      index: itemIndex + 1,
+      label: 'item',
+      maxAttempts,
+      summary: describeLoopItem(loopItem),
+      total: items.length,
+    };
+    options.progress.startTask(task);
     let itemSucceeded = false;
+    let lastStepResult: StepResult | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      task.attempt = attempt;
+      task.maxAttempts = maxAttempts;
       if (options.interruptState.interrupted) {
         status = 'failed';
         summary = `Loop ${options.loop.id} was interrupted and stopped.`;
@@ -560,6 +625,7 @@ async function runLoopStep(options: {
       let retryable = true;
 
       for (const step of options.loop.steps) {
+        task.detail = step.id;
         const stepId = loopStepId(options.loop.id, itemIndex, attempt, step.id);
         const stepResult = await runDefinedStep({
           attempt,
@@ -581,6 +647,7 @@ async function runLoopStep(options: {
           [stepId]: stepResult,
         };
         await writeHarnessState(options.paths, options.state);
+        lastStepResult = stepResult;
 
         attemptSummary = stepResult.summary;
         attemptFeedback = stepResult.feedback;
@@ -646,8 +713,19 @@ async function runLoopStep(options: {
         summary = `Loop ${options.loop.id} was interrupted and stopped.`;
         feedback = {problem: summary};
       }
+      options.progress.finishTask(task, {
+        ...harnessProgressResultFromStepResult(lastStepResult),
+        status,
+        summary,
+      });
       break;
     }
+
+    options.progress.finishTask(task, {
+      ...harnessProgressResultFromStepResult(lastStepResult),
+      status,
+      summary,
+    });
   }
 
   result = {items: items.length};
@@ -742,6 +820,7 @@ async function runAgentStep(options: {
       {
         agentId: options.agent,
         color: options.request.color,
+        format: options.request.format,
         onEvent: event => options.progress.onEvent(event),
         overrides: {resultMode: 'json'},
         processRegistry: options.processRegistry,
@@ -760,6 +839,7 @@ async function runAgentStep(options: {
           stepResults: options.state.stepResults ?? {},
         }),
         logLevel: options.request.logLevel,
+        verbosity: options.request.verbosity,
         verbose: options.request.verbose,
       },
       options.provider,
@@ -820,7 +900,13 @@ async function runAgentStep(options: {
   };
   options.progress.finishStep(
     {detail: options.stepId, label: options.agent},
-    result,
+    {
+      agentRunDir,
+      durable: status === 'success',
+      result: agentOutput?.result ?? null,
+      status,
+      summary,
+    },
   );
   await appendHarnessLogEvent(options.paths, options.state, {
     agent: options.agent,
@@ -847,7 +933,11 @@ async function runCommandStep(options: {
   const startedAt = new Date();
   const command = commandArgv(options.command);
   await writeHarnessState(options.paths, options.state);
-  options.progress.startStep({detail: options.stepId, label: options.id});
+  options.progress.startStep({
+    activity: command.join(' '),
+    detail: options.stepId,
+    label: options.id,
+  });
   await appendHarnessLogEvent(options.paths, options.state, {
     command: command.join(' '),
     kind: 'check_started',
@@ -907,7 +997,15 @@ async function runCommandStep(options: {
   };
   options.progress.finishStep(
     {detail: options.stepId, label: options.id},
-    result,
+    {
+      command: result.command,
+      exitCode: result.exitCode,
+      durable: status === 'success',
+      stderrTail: tail(result.stderr),
+      status,
+      stdoutTail: tail(result.stdout),
+      summary,
+    },
   );
   await appendHarnessLogEvent(options.paths, options.state, {
     command: result.command,
@@ -938,6 +1036,10 @@ async function finishHarnessRun(options: {
     feedback: options.feedback,
     finishedAt: finishedAt.toISOString(),
     harnessName: options.definition.name,
+    completedItems: countCompletedHarnessItemsFromState(
+      options.state,
+      options.status,
+    ),
     iterations: options.state.attempts.length,
     runDir: options.paths.runDir,
     startedAt: options.startedAt.toISOString(),
@@ -981,11 +1083,24 @@ async function runHarnessAttempts(options: {
   let terminalAttempt: HarnessAttemptRecord | undefined;
   let terminalStatus: Exclude<HarnessRunStatus, 'running'> = 'failed';
   let failedStep: string | undefined;
+  const wholeHarnessTask = {
+    attempt: 1,
+    detail: options.definition.agent,
+    index: 1,
+    label: 'item',
+    maxAttempts,
+    summary: options.definition.name,
+    total: 1,
+  };
+
+  options.progress.startTask(wholeHarnessTask);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    wholeHarnessTask.attempt = attempt;
+    wholeHarnessTask.maxAttempts = maxAttempts;
     if (options.interruptState.interrupted) {
       terminalStatus = 'interrupted';
-      failedStep = `attempt-${attempt}`;
+      failedStep = terminalAttempt?.failedStep?.detail ?? `attempt-${attempt}`;
       break;
     }
 
@@ -1007,7 +1122,7 @@ async function runHarnessAttempts(options: {
 
     if (options.interruptState.interrupted) {
       terminalStatus = 'interrupted';
-      failedStep = `attempt-${attempt}`;
+      failedStep = attemptRecord.failedStep?.detail ?? `attempt-${attempt}`;
       break;
     }
     if (attemptRecord.status === 'success') {
@@ -1016,10 +1131,10 @@ async function runHarnessAttempts(options: {
     }
     if (attemptRecord.status === 'blocked') {
       terminalStatus = 'blocked';
-      failedStep = `attempt-${attempt}`;
+      failedStep = attemptRecord.failedStep?.detail ?? `attempt-${attempt}`;
       break;
     }
-    failedStep = `attempt-${attempt}`;
+    failedStep = attemptRecord.failedStep?.detail ?? `attempt-${attempt}`;
   }
 
   const finishedAt = new Date();
@@ -1037,6 +1152,10 @@ async function runHarnessAttempts(options: {
     feedback: terminalAttempt?.feedback ?? null,
     finishedAt: finishedAt.toISOString(),
     harnessName: options.definition.name,
+    completedItems: countCompletedHarnessItemsFromState(
+      options.state,
+      terminalStatus,
+    ),
     iterations: options.state.attempts.length,
     runDir: options.paths.runDir,
     startedAt: options.startedAt.toISOString(),
@@ -1060,8 +1179,91 @@ async function runHarnessAttempts(options: {
     stepId: options.definition.name,
     summary,
   });
+  options.progress.finishTask(wholeHarnessTask, {
+    ...harnessProgressResultFromAttempt(terminalAttempt),
+    status: terminalStatus === 'interrupted' ? 'failed' : terminalStatus,
+    summary,
+  });
 
   return result;
+}
+
+function countCompletedHarnessItemsFromState(
+  state: {
+    status: HarnessRunStatus;
+    stepResults?: Record<string, StepResult>;
+  },
+  status: HarnessRunStatus,
+): number {
+  const stepResults = Object.values(state.stepResults ?? {});
+  if (stepResults.some(stepResult => stepResult.kind === 'loop')) {
+    return countCompletedLoopItems(stepResults);
+  }
+
+  return status === 'success' ? 1 : 0;
+}
+
+function countCompletedLoopItems(stepResults: StepResult[]): number {
+  const itemAttempts = new Map<
+    string,
+    Map<number, {statuses: HarnessStepStatus[]; stepIds: Set<string>}>
+  >();
+
+  for (const stepResult of stepResults) {
+    const parsed = parseLoopItemStepId(stepResult.stepId);
+    if (!parsed) {
+      continue;
+    }
+
+    const itemKey = `${parsed.loopId}.${parsed.itemIndex}`;
+    const attempts = itemAttempts.get(itemKey) ?? new Map();
+    itemAttempts.set(itemKey, attempts);
+
+    const attempt = attempts.get(parsed.attempt) ?? {
+      statuses: [],
+      stepIds: new Set(),
+    };
+    attempt.statuses.push(stepResult.status);
+    attempt.stepIds.add(parsed.stepId);
+    attempts.set(parsed.attempt, attempt);
+  }
+
+  let completedItems = 0;
+  for (const attempts of itemAttempts.values()) {
+    const expectedStepCount = Math.max(
+      ...Array.from(attempts.values(), attempt => attempt.stepIds.size),
+    );
+    if (expectedStepCount === 0) {
+      continue;
+    }
+
+    const itemSucceeded = Array.from(attempts.values()).some(
+      attempt =>
+        attempt.stepIds.size === expectedStepCount &&
+        attempt.statuses.every(status => status === 'success'),
+    );
+    if (itemSucceeded) {
+      completedItems += 1;
+    }
+  }
+
+  return completedItems;
+}
+
+function parseLoopItemStepId(
+  stepId: string,
+): {attempt: number; itemIndex: number; loopId: string; stepId: string} | null {
+  const match = /^(.+?)\.item-(\d+)\.attempt-(\d+)\.(.+)$/.exec(stepId);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    loopId: match[1],
+    itemIndex: Number(match[2]),
+    attempt: Number(match[3]),
+    stepId: match[4],
+  };
 }
 
 async function runHarnessAttempt(options: {
@@ -1093,11 +1295,13 @@ async function runHarnessAttempt(options: {
   let status: HarnessStepStatus = 'failed';
   let summary = '';
   let feedback: AgentFeedback | null = null;
+  let failedStep: HarnessProgressStep | undefined;
   try {
     const runResult = await runAgent(
       {
         agentId: options.agent,
         color: options.request.color,
+        format: options.request.format,
         onEvent: event => options.progress.onEvent(event),
         overrides: {resultMode: 'json'},
         processRegistry: options.processRegistry,
@@ -1110,6 +1314,7 @@ async function runHarnessAttempt(options: {
         },
         task: taskFromInputs(options.state.inputs, options.attempt),
         logLevel: options.request.logLevel,
+        verbosity: options.request.verbosity,
         verbose: options.request.verbose,
       },
       options.provider,
@@ -1155,22 +1360,14 @@ async function runHarnessAttempt(options: {
     feedback = {problem: summary};
   }
 
-  const agentStep: StepResult = {
-    artifacts: agentOutput?.artifacts ?? [],
-    failureKind: agentOutput?.failureKind,
-    feedback,
-    finishedAt: new Date().toISOString(),
-    kind: 'agent',
-    result: agentOutput?.result ?? null,
-    runDir: agentRunDir,
-    startedAt: startedAt.toISOString(),
-    status,
-    stepId,
-    summary,
-  };
   options.progress.finishStep(
     {detail: stepId, label: options.agent},
-    agentStep,
+    {
+      agentRunDir,
+      durable: status === 'success',
+      status,
+      summary,
+    },
   );
   await appendHarnessLogEvent(options.paths, options.state, {
     agent: options.agent,
@@ -1216,6 +1413,10 @@ async function runHarnessAttempt(options: {
             value => value.trim().length > 0,
           ),
         };
+        failedStep = {
+          detail: `attempt-${options.attempt}.check.${check.id}`,
+          label: check.id,
+        };
         break;
       }
     }
@@ -1225,6 +1426,7 @@ async function runHarnessAttempt(options: {
     agentRunDir,
     attempt: options.attempt,
     checks,
+    failedStep,
     failureKind: agentOutput?.failureKind,
     feedback,
     finishedAt: new Date().toISOString(),
@@ -1248,7 +1450,11 @@ async function runCheck(options: {
   const startedAt = new Date();
   const command = commandArgv(options.check.command);
   await writeHarnessState(options.paths, options.state);
-  options.progress.startStep({detail: stepId, label: options.check.id});
+  options.progress.startStep({
+    activity: command.join(' '),
+    detail: stepId,
+    label: options.check.id,
+  });
   await appendHarnessLogEvent(options.paths, options.state, {
     command: command.join(' '),
     kind: 'check_started',
@@ -1293,7 +1499,12 @@ async function runCheck(options: {
   options.progress.finishStep(
     {detail: stepId, label: options.check.id},
     {
+      command: result.command,
+      exitCode: result.exitCode,
+      durable: status === 'success',
+      stderrTail: tail(result.stderr),
       status,
+      stdoutTail: tail(result.stdout),
       summary: interrupted
         ? `Check ${options.check.id} was interrupted.`
         : status === 'success'
@@ -1607,6 +1818,33 @@ function taskFromStepContext(options: {
   );
 }
 
+function describeLoopItem(loopItem: unknown): string {
+  if (loopItem === null || loopItem === undefined) {
+    return 'item';
+  }
+  if (typeof loopItem === 'string') {
+    return loopItem;
+  }
+  if (typeof loopItem === 'number' || typeof loopItem === 'boolean') {
+    return String(loopItem);
+  }
+  if (isRecord(loopItem)) {
+    const candidate =
+      (typeof loopItem.title === 'string' && loopItem.title.trim()) ||
+      (typeof loopItem.name === 'string' && loopItem.name.trim()) ||
+      (typeof loopItem.summary === 'string' && loopItem.summary.trim()) ||
+      (typeof loopItem.id === 'string' && loopItem.id.trim());
+    if (candidate) {
+      return candidate;
+    }
+  }
+  try {
+    return JSON.stringify(loopItem);
+  } catch {
+    return 'item';
+  }
+}
+
 function resolveLoopItems(
   loop: HarnessLoopStepDefinition,
   state: HarnessState,
@@ -1659,6 +1897,71 @@ function isRetryableFailure(result: StepResult): boolean {
     return false;
   }
   return result.failureKind !== 'plan' && result.failureKind !== 'blocked';
+}
+
+function harnessProgressResultFromStepResult(
+  result: StepResult | undefined,
+): Partial<HarnessProgressResult> {
+  if (!result) {
+    return {};
+  }
+
+  return {
+    agentRunDir: result.runDir,
+    command: result.command,
+    exitCode: result.exitCode,
+    result: result.kind === 'agent' ? result.result : undefined,
+    stderrTail:
+      result.kind === 'command'
+        ? tail((result as CommandExecutionResult).stderr)
+        : undefined,
+    stdoutTail:
+      result.kind === 'command'
+        ? tail((result as CommandExecutionResult).stdout)
+        : undefined,
+  };
+}
+
+function harnessProgressResultFromAttempt(
+  attempt: HarnessAttemptRecord | undefined,
+): Partial<HarnessProgressResult> {
+  if (!attempt) {
+    return {};
+  }
+
+  const check = attempt.checks.at(-1);
+  return {
+    agentRunDir: attempt.agentRunDir,
+    command: check?.command,
+    exitCode: check?.exitCode,
+    step: attempt.failedStep,
+    stderrTail: check?.stderr ? tail(check.stderr) : undefined,
+    stdoutTail: check?.stdout ? tail(check.stdout) : undefined,
+  };
+}
+
+function tail(value: string, maxLength = 4000): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  return trimmed.slice(-maxLength);
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+
+  const seconds = Math.round(ms / 100) / 10;
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}m ${rest}s`;
 }
 
 function parseAgentOutput(output: string, agent: string): AgentOutput {
@@ -1797,13 +2100,30 @@ function matchesHarnessLogRequest(
   event: HarnessLogEvent,
   request: HarnessLogsRequest,
 ): boolean {
-  if (request.step && !event.stepId.startsWith(request.step)) {
-    return false;
+  if (request.step) {
+    const humanizedStepId = humanizeHarnessStepId(event.stepId);
+    if (
+      !event.stepId.startsWith(request.step) &&
+      !humanizedStepId?.startsWith(request.step)
+    ) {
+      return false;
+    }
   }
   if (request.failed && event.status !== 'failed') {
     return false;
   }
   return true;
+}
+
+function humanizeHarnessStepId(stepId: string | undefined): string | undefined {
+  if (!stepId) {
+    return undefined;
+  }
+
+  return stepId
+    .split('.')
+    .filter(part => !/^attempt-\d+$/.test(part))
+    .join('.');
 }
 
 function resolveInputPath(projectCwd: string, inputPath: string): string {
@@ -1821,7 +2141,10 @@ function durationMs(startedAt: string, finishedAt: string | undefined): number {
 
 function latestAttemptStep(state: HarnessState): string | undefined {
   const attempt = state.attempts.at(-1);
-  return attempt ? `attempt-${attempt.attempt}` : undefined;
+  return (
+    attempt?.failedStep?.detail ??
+    (attempt ? `attempt-${attempt.attempt}` : undefined)
+  );
 }
 
 function timestampLabel(timestamp: string): string {

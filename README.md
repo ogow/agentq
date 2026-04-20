@@ -22,7 +22,7 @@ AgentQ v1 is foreground-only. It does not intentionally leave Codex running in t
 - `agentq run <agent> --task <task>` using `yargs`.
 - `agentq harness run`, `agentq harness inspect`, and `agentq harness logs`.
 - `agentq status` and `agentq stop <run>` for pid-backed liveness checks and stop control.
-- `agentq agents list` and `agentq runs list`.
+- `agentq agents list`, `agentq runs list`, and `agentq runs inspect`.
 - Markdown agent parsing with YAML frontmatter.
 - Required agent fields: `id`, `description`, `provider`, `model`, `reasoning`, `result_mode`, `sandbox`, and `timeout`.
 - Project-local agent resolution before global resolution.
@@ -91,19 +91,19 @@ bun run agentq run example --task "summarize this repo"
 
 When the run finishes, AgentQ prints a compact summary with status, duration, tool usage, changed files, the run directory, and the final response.
 
-Use `--details` for full artifact paths and metadata. Use `--verbose` for a live event timeline plus the detailed final summary. Use `--no-color` when plain terminal output is preferred.
+Use `--details` for full artifact paths and metadata. Use `-v` for step/task structure, repeat `-v` as `-vv` for execution diagnostics, and add `--jsonl` when you want the same event stream as machine-readable lines. The same verbosity rules apply to both agent runs and harness runs.
 
-Use `--log-level` when you want a specific live logging shape:
+Examples:
 
-| Level | Output |
-| --- | --- |
-| `progress` | Default spinner/progress output. |
-| `messages` | Human-readable LLM messages only. |
-| `verbose` | Human-readable timeline for normalized run events. |
-| `json` | Structured NDJSON for all normalized run events. |
-| `json-messages` | Structured NDJSON for LLM messages only. |
+```sh
+bun run agentq harness run work -v
+bun run agentq harness run work -vv
+bun run agentq harness run work --jsonl
+bun run agentq harness run work --jsonl -vv | jq -r 'select(.type == "task.finished")'
+bun run agentq harness run work --jsonl | jq -r 'select(.type == "harness.finished") | .status'
+```
 
-`--verbose` is shorthand for `--log-level verbose`.
+`--no-color` keeps output plain when you want to pipe or diff it.
 
 Check active work:
 
@@ -112,6 +112,15 @@ bun run agentq status
 bun run agentq status --all
 bun run agentq status --json
 ```
+
+List recent runs and inspect one directly:
+
+```sh
+bun run agentq runs list --since 7d --limit 20
+bun run agentq runs inspect <run-id>
+```
+
+`runs inspect` reads the saved `run.json` and `output.md` files from `~/.agentq/runs/<agent-run-id>/`.
 
 Stop a recorded run:
 
@@ -178,16 +187,46 @@ log.jsonl
 tasks.json
 ```
 
-`log.jsonl` records harness starts, attempts, check results, and pointers to nested agent run directories. Agent stdout, stderr, raw JSONL, final answers, and agent-created artifacts stay in the agent run folders under `~/.agentq/runs`. `tasks.json` is the current harness state.
+`log.jsonl` records harness starts, retries, check results, and pointers to nested agent run directories. Agent stdout, stderr, raw JSONL, final answers, and agent-created artifacts stay in the agent run folders under `~/.agentq/runs`. `tasks.json` is the current harness state.
+
+Default harness output stays bounded: on a TTY it keeps a live status row for the active task, and on non-TTY output it prints a compact history of completed tasks plus concise failure context. Use `-v` to see step structure and assistant messages once, `-vv` to include tool calls and diagnostics, and `--jsonl` to stream the same event model as machine-readable lines.
+
+For example, this prints the JSONL status records and filters them with `jq`:
+
+```sh
+bun run agentq harness run work --jsonl | jq -r '
+  select(.type == "task.finished" or .type == "harness.finished") |
+  [.type, .status, .summary] | @tsv
+'
+```
 
 Inspect the combined timeline without opening files:
 
 ```sh
 bun run agentq harness logs <run-id>
-bun run agentq harness logs <run-id> --step attempt-1
+bun run agentq harness logs <run-id> --step check
 bun run agentq harness logs <run-id> --failed
 bun run agentq harness logs <run-id> --follow
 ```
+
+The `--step` filter matches the user-facing step label, so `--step check`
+shows check events without exposing internal `attempt-*` ids.
+
+## Eval Packs
+
+Run a local eval pack:
+
+```sh
+bun run agentq eval run inspectability
+```
+
+Inspect a saved eval run:
+
+```sh
+bun run agentq eval inspect <eval-run-id>
+```
+
+Eval packs live in `.agentq/evals/<pack>.ts`. Small JSON fixture files can live next to the pack and be loaded locally from TypeScript. Eval run records live in `~/.agentq/eval-runs`, while any nested agent or harness runs stay in their normal `~/.agentq/runs` and `~/.agentq/harness-runs` locations. The first grader set is deterministic: exit codes, output substrings, file existence, run status, and JSON-path checks.
 
 Check code quality:
 

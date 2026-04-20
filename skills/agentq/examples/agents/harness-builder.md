@@ -3,7 +3,7 @@ id: harness-builder
 description: Implements or repairs one harness task and returns AgentOutput JSON.
 provider: codex
 model: gpt-5.4
-reasoning: medium
+reasoning: high
 result_mode: json
 sandbox: workspace-write
 timeout: 20m

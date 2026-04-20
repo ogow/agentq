@@ -17,7 +17,7 @@ The core package under `src/core` owns:
 - Codex JSONL normalization into typed AgentQ events.
 - Changed-file, token, tool-usage, event-count, process, and failure metadata summaries.
 - Pid-backed status and stop helpers.
-- Chalk-backed rendering for live progress, run summaries, run history tables, and harness logs.
+- Chalk-backed rendering for live progress, run summaries, run history tables, and harness logs, with shared human/JSONL verbosity filtering.
 
 The core exposes importable APIs through `src/core/index.ts`.
 

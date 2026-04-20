@@ -95,6 +95,13 @@ Inspect a harness run:
 agentq harness inspect <harness-run-id-or-path>
 ```
 
+Run and inspect an eval pack:
+
+```sh
+agentq eval run <pack-name-or-path>
+agentq eval inspect <eval-run-id-or-path>
+```
+
 ## Run Flags
 
 Common `agentq run` flags:
@@ -186,6 +193,42 @@ steps:
 `loop.retries: 2` means one first attempt plus up to two feedback-driven repairs. The splitter step is not retried unless the harness explicitly runs a new harness attempt.
 
 Runnable example agents and harnesses live in the installable skill's `examples/` folder.
+
+## Eval Packs
+
+Eval packs live at:
+
+```text
+.agentq/evals/<pack>.ts
+```
+
+Run records live at:
+
+```text
+~/.agentq/eval-runs/<eval-run-id>/
+  results.json
+  log.jsonl
+```
+
+Pack files import from `agentq/eval`:
+
+```ts
+import {defineEval, graders} from 'agentq/eval';
+
+export default defineEval({
+  name: 'smoke',
+  cases: [
+    {
+      id: 'cli-smoke',
+      type: 'command',
+      command: ['bun', '-e', 'console.log("ok")'],
+      graders: [graders.exitCode(0), graders.stdoutContains('ok')],
+    },
+  ],
+});
+```
+
+Use `command` cases for fast CLI/file checks, `agent` cases for a single agent's output contract, and `harness` cases for end-to-end workflow behavior. For detailed design guidance, read `references/evals.md`.
 
 ## Finding Previous Results
 

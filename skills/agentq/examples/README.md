@@ -47,4 +47,21 @@ Harness runs are saved under `~/.agentq/harness-runs/<run-id>/` and can be inspe
 agentq harness inspect <run-id-or-path>
 ```
 
-These examples are covered by automated tests in `tests/examples.test.ts`.
+## Eval Packs
+
+The example eval pack lives at `examples/evals/inspectability.ts`. Copy it into:
+
+```text
+.agentq/evals/inspectability.ts
+```
+
+Run it with:
+
+```sh
+agentq eval run inspectability
+agentq eval inspect <eval-run-id-or-path>
+```
+
+Eval runs are saved under `~/.agentq/eval-runs/<run-id>/`. Use them to protect stable behavior after manual runs reveal what should not regress.
+
+The harness examples are covered by automated tests in `tests/examples.test.ts`.
