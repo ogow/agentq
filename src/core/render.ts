@@ -1,5 +1,11 @@
 import {Chalk, chalkStderr} from 'chalk';
-import type {AgentQEvent, ChangedFileSummary, RunStatus} from './types';
+import cliSpinners from 'cli-spinners';
+import type {
+  AgentQEvent,
+  ChangedFileSummary,
+  LogLevel,
+  RunStatus,
+} from './types';
 import type {RunMetadata} from './metadata';
 
 type ChalkStyle = typeof chalkStderr;
@@ -14,6 +20,26 @@ export interface ProgressRenderer {
   stop: () => void;
 }
 
+export interface HarnessProgressStep {
+  detail?: string;
+  label: string;
+}
+
+export interface HarnessProgressResult {
+  status: 'success' | 'failed' | 'blocked';
+  summary?: string;
+}
+
+export interface HarnessProgressRenderer {
+  finishStep: (
+    step: HarnessProgressStep,
+    result: HarnessProgressResult,
+  ) => void;
+  onEvent: (event: AgentQEvent) => void;
+  startStep: (step: HarnessProgressStep) => void;
+  stop: () => void;
+}
+
 interface RenderOptions {
   color?: boolean;
   details?: boolean;
@@ -21,19 +47,66 @@ interface RenderOptions {
 
 interface ProgressOptions extends RenderOptions {
   agentId: string;
+  logLevel?: LogLevel;
+  progress?: boolean;
   stream?: RenderStream;
   verbose?: boolean;
+}
+
+interface HarnessProgressOptions extends RenderOptions {
+  logLevel?: LogLevel;
+  stream?: RenderStream;
+  verbose?: boolean;
+}
+
+interface StructuredLogContext {
+  agentId?: string;
+  source: 'agent' | 'harness';
+  step?: HarnessProgressStep;
 }
 
 export function createProgressRenderer({
   agentId,
   color,
+  logLevel,
+  progress = true,
   stream = process.stderr,
   verbose,
 }: ProgressOptions): ProgressRenderer {
   const style = createStyle(color);
+  const level = resolveLogLevel(logLevel, verbose);
 
-  if (verbose) {
+  if (!progress) {
+    return noopProgressRenderer();
+  }
+
+  if (level === 'json' || level === 'json-messages') {
+    return {
+      onEvent: event => {
+        if (level === 'json-messages' && !isAssistantMessage(event)) {
+          return;
+        }
+        stream.write(
+          `${formatStructuredLogEvent(event, {agentId, source: 'agent'})}\n`,
+        );
+      },
+      stop: () => undefined,
+    };
+  }
+
+  if (level === 'messages') {
+    return {
+      onEvent: event => {
+        const line = formatMessageLogEvent(event, {color});
+        if (line) {
+          stream.write(`${line}\n`);
+        }
+      },
+      stop: () => undefined,
+    };
+  }
+
+  if (level === 'verbose') {
     return {
       onEvent: event => {
         const line = formatTimelineEvent(event, {color});
@@ -52,11 +125,22 @@ export function createProgressRenderer({
     };
   }
 
-  const frames = ['-', '\\', '|', '/'];
+  const spinner = cliSpinners.dots;
+  const frames = spinner.frames;
   let index = 0;
   let detail = 'starting';
+  let tokenSummary: string | undefined;
   let lastPlainLength = 0;
   const prefix = `AgentQ ${agentId}`;
+
+  const clearLine = () => {
+    if (lastPlainLength > 0) {
+      stream.write('\r');
+      stream.write(' '.repeat(lastPlainLength));
+      stream.write('\r');
+      lastPlainLength = 0;
+    }
+  };
 
   const render = () => {
     const plain = `${prefix} ${frames[index]} ${detail}`;
@@ -76,18 +160,261 @@ export function createProgressRenderer({
   const interval = setInterval(() => {
     index = (index + 1) % frames.length;
     render();
-  }, 120);
+  }, spinner.interval);
+
+  const writePersistentEvent = (event: AgentQEvent): boolean => {
+    const label = eventLabel(event);
+    const eventDetail = formatProgressDetail(event);
+
+    if (!eventDetail || (label !== 'message' && label !== 'fail')) {
+      return false;
+    }
+
+    clearLine();
+    stream.write(
+      `${style.dim('agent')} ${agentId}  ${style.dim(label)}  ${eventDetail}\n`,
+    );
+    render();
+    return true;
+  };
 
   return {
     onEvent: event => {
-      detail = formatProgressDetail(event) ?? detail;
+      const eventDetail = formatProgressDetail(event);
+      if (event.kind === 'token_usage' && eventDetail) {
+        tokenSummary = eventDetail;
+      }
+      detail = eventDetail ?? detail;
+      if (!writePersistentEvent(event)) {
+        render();
+      }
+    },
+    stop: () => {
+      clearInterval(interval);
+      clearLine();
+      if (tokenSummary) {
+        stream.write(`${style.dim('agent')} ${agentId}  ${tokenSummary}\n`);
+      }
+    },
+  };
+}
+
+export function createHarnessProgressRenderer({
+  color,
+  logLevel,
+  stream = process.stderr,
+  verbose,
+}: HarnessProgressOptions = {}): HarnessProgressRenderer {
+  const style = createStyle(color);
+  const level = resolveLogLevel(logLevel, verbose);
+
+  if (level === 'json' || level === 'json-messages') {
+    let current: HarnessProgressStep | undefined;
+    const writeStepEvent = (
+      kind: 'harness_step_started' | 'harness_step_finished',
+      step: HarnessProgressStep,
+      result?: HarnessProgressResult,
+    ) => {
+      if (level !== 'json') {
+        return;
+      }
+      stream.write(
+        `${JSON.stringify({
+          detail: step.detail,
+          kind,
+          label: step.label,
+          source: 'harness',
+          status: result?.status,
+          summary: result?.summary,
+        })}\n`,
+      );
+    };
+
+    return {
+      finishStep: (step, result) => {
+        writeStepEvent('harness_step_finished', step, result);
+        current = undefined;
+      },
+      onEvent: event => {
+        if (level === 'json-messages' && !isAssistantMessage(event)) {
+          return;
+        }
+        stream.write(
+          `${formatStructuredLogEvent(event, {
+            source: 'agent',
+            step: current,
+          })}\n`,
+        );
+      },
+      startStep: step => {
+        current = step;
+        writeStepEvent('harness_step_started', step);
+      },
+      stop: () => undefined,
+    };
+  }
+
+  if (level === 'messages') {
+    let current: HarnessProgressStep | undefined;
+    return {
+      finishStep: () => {
+        current = undefined;
+      },
+      onEvent: event => {
+        const line = formatMessageLogEvent(event, {
+          color,
+          prefix: current
+            ? `agent ${formatHarnessProgressLabel(current)}`
+            : 'agent',
+        });
+        if (line) {
+          stream.write(`${line}\n`);
+        }
+      },
+      startStep: step => {
+        current = step;
+      },
+      stop: () => undefined,
+    };
+  }
+
+  if (level === 'verbose') {
+    let current: HarnessProgressStep | undefined;
+    return {
+      finishStep: (step, result) => {
+        current = undefined;
+        const suffix = result.summary ? ` - ${result.summary}` : '';
+        stream.write(
+          `${style.dim('harness')} ${statusLabel(result.status, style)} ${formatHarnessProgressLabel(
+            step,
+          )}${suffix}\n`,
+        );
+      },
+      onEvent: event => {
+        const line = formatTimelineEvent(event, {color});
+        if (line) {
+          const prefix = current
+            ? `${style.dim('agent')} ${formatHarnessProgressLabel(current)}`
+            : style.dim('agent');
+          stream.write(`${prefix} ${line}\n`);
+        }
+      },
+      startStep: step => {
+        current = step;
+        stream.write(
+          `${style.dim('harness')} ${style.cyan('start')} ${formatHarnessProgressLabel(
+            step,
+          )}\n`,
+        );
+      },
+      stop: () => undefined,
+    };
+  }
+
+  if (!stream.isTTY) {
+    return noopHarnessProgressRenderer();
+  }
+
+  const spinner = cliSpinners.dots;
+  const frames = spinner.frames;
+  let current: HarnessProgressStep | undefined;
+  let currentActivity: string | undefined;
+  let currentTokenSummary: string | undefined;
+  let index = 0;
+  let lastPlainLength = 0;
+
+  const render = () => {
+    if (!current) {
+      return;
+    }
+
+    const detail = formatHarnessProgressDetail(current, currentActivity);
+    const plain = `${frames[index]} ${current.label} ${detail ?? ''}`.trim();
+    const line = [
+      style.cyan(frames[index]),
+      style.white(current.label),
+      detail ? style.dim(detail) : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    stream.write(
+      `\r${line}${' '.repeat(Math.max(0, lastPlainLength - plain.length))}`,
+    );
+    lastPlainLength = plain.length;
+  };
+
+  const clearLine = () => {
+    if (lastPlainLength > 0) {
+      stream.write('\r');
+      stream.write(' '.repeat(lastPlainLength));
+      stream.write('\r');
+      lastPlainLength = 0;
+    }
+  };
+
+  const interval = setInterval(() => {
+    index = (index + 1) % frames.length;
+    render();
+  }, spinner.interval);
+
+  const writePersistentEvent = (event: AgentQEvent): boolean => {
+    if (!current) {
+      return false;
+    }
+
+    const label = eventLabel(event);
+    const detail = formatProgressDetail(event);
+
+    if (!detail || (label !== 'message' && label !== 'fail')) {
+      return false;
+    }
+
+    clearLine();
+    stream.write(
+      `${style.dim('agent')} ${formatHarnessProgressLabel(current)}  ${style.dim(
+        label,
+      )}  ${detail}\n`,
+    );
+    render();
+    return true;
+  };
+
+  return {
+    finishStep: (step, result) => {
+      clearLine();
+      current = undefined;
+      currentActivity = undefined;
+      const tokenSummary = currentTokenSummary;
+      currentTokenSummary = undefined;
+      const summary = result.summary ? style.dim(` - ${result.summary}`) : '';
+      const tokenLine = tokenSummary ? style.dim(` · ${tokenSummary}`) : '';
+      stream.write(
+        `${statusGlyph(result.status, style)} ${style.white(
+          step.label,
+        )}${step.detail ? ` ${style.dim(step.detail)}` : ''}${summary}${tokenLine}\n`,
+      );
+    },
+    onEvent: event => {
+      const detail = formatProgressDetail(event);
+      if (event.kind === 'token_usage' && detail) {
+        currentTokenSummary = detail;
+      }
+      currentActivity = detail ?? currentActivity;
+      if (!writePersistentEvent(event)) {
+        render();
+      }
+    },
+    startStep: step => {
+      current = step;
+      currentActivity = undefined;
+      currentTokenSummary = undefined;
+      index = 0;
       render();
     },
     stop: () => {
       clearInterval(interval);
-      stream.write('\r');
-      stream.write(' '.repeat(lastPlainLength));
-      stream.write('\r');
+      clearLine();
+      currentTokenSummary = undefined;
     },
   };
 }
@@ -98,7 +425,7 @@ export function formatTimelineEvent(
 ): string | undefined {
   const style = createStyle(options.color);
   const label = eventLabel(event);
-  const detail = formatProgressDetail(event);
+  const detail = formatVerboseProgressDetail(event);
 
   if (!label || !detail) {
     return undefined;
@@ -109,6 +436,31 @@ export function formatTimelineEvent(
     colorLabel(label, event.kind, style),
     detail,
   ].join('  ');
+}
+
+export function formatStructuredLogEvent(
+  event: AgentQEvent,
+  context: StructuredLogContext,
+): string {
+  return JSON.stringify({
+    agentId: context.agentId,
+    callId: event.callId,
+    command: event.command,
+    detail: context.step?.detail,
+    exitCode: event.exitCode,
+    files: event.files,
+    kind: event.kind,
+    label: context.step?.label,
+    message: event.message,
+    phase: event.phase,
+    provider: event.provider,
+    rawType: event.rawType,
+    source: context.source,
+    status: event.status,
+    timestamp: event.timestamp,
+    tokenUsage: event.tokenUsage,
+    toolName: event.toolName,
+  });
 }
 
 export function formatRunSummary(
@@ -223,6 +575,7 @@ function formatCompactRunSummary(
     `run: ${style.dim(metadata.paths.runDir)}`,
     `tools: ${summarizeTools(metadata.toolUsage)}`,
     `edits: ${summarizeFiles(metadata.changedFiles)}`,
+    formatTokenUsageSummary(metadata.tokenUsage, {compact: true}),
   ];
 
   const sections = [
@@ -250,7 +603,6 @@ function formatDetailedRunSummary(
   const runName = runDirName(metadata.paths.runDir);
   const toolTotals = summarizeTools(metadata.toolUsage);
   const editTotals = summarizeFiles(metadata.changedFiles);
-  const tokenTotal = metadata.tokenUsage?.totalTokens;
   const rows = [
     row('agent', metadata.agent.id),
     row('result', statusText(metadata.status, style)),
@@ -260,7 +612,12 @@ function formatDetailedRunSummary(
     row('tools', toolTotals),
     row('edits', editTotals),
     row('events', String(metadata.eventCount)),
-    ...(tokenTotal ? [row('tokens', formatNumber(tokenTotal))] : []),
+    row(
+      'tokens',
+      formatTokenUsageSummary(metadata.tokenUsage, {compact: false}).slice(
+        'tokens: '.length,
+      ),
+    ),
     row('run', runName),
   ];
 
@@ -298,13 +655,52 @@ function createStyle(color?: boolean): ChalkStyle {
   return chalkStderr;
 }
 
+function resolveLogLevel(
+  logLevel: LogLevel | undefined,
+  verbose: boolean | undefined,
+): LogLevel {
+  return logLevel ?? (verbose ? 'verbose' : 'progress');
+}
+
 function formatProgressDetail(event: AgentQEvent): string | undefined {
   if (event.kind === 'run_started') {
     return 'loaded agent and started run';
   }
 
-  if (event.kind === 'assistant_message' && event.message) {
-    return compact(event.message, 120);
+  if (event.kind === 'assistant_message') {
+    return formatAssistantMessage(event, 120);
+  }
+
+  if (event.kind === 'tool_started') {
+    return undefined;
+  }
+
+  if (event.kind === 'tool_finished') {
+    if (event.status === 'failed') {
+      return event.toolName ? `${event.toolName} failed` : 'tool failed';
+    }
+
+    return undefined;
+  }
+
+  if (event.kind === 'run_completed') {
+    return 'completed';
+  }
+
+  if (event.kind === 'token_usage' && event.tokenUsage) {
+    return formatTokenUsageSummary(event.tokenUsage, {compact: true});
+  }
+
+  return undefined;
+}
+
+function formatVerboseProgressDetail(event: AgentQEvent): string | undefined {
+  if (event.kind === 'run_started') {
+    return 'loaded agent and started run';
+  }
+
+  if (event.kind === 'assistant_message') {
+    return formatAssistantMessage(event, 120);
   }
 
   if (event.kind === 'tool_started') {
@@ -322,11 +718,101 @@ function formatProgressDetail(event: AgentQEvent): string | undefined {
     return 'completed';
   }
 
-  if (event.kind === 'token_usage' && event.tokenUsage?.totalTokens) {
-    return `${formatNumber(event.tokenUsage.totalTokens)} total`;
+  if (event.kind === 'token_usage' && event.tokenUsage) {
+    return formatTokenUsageSummary(event.tokenUsage, {compact: true});
   }
 
   return undefined;
+}
+
+function formatMessageLogEvent(
+  event: AgentQEvent,
+  options: RenderOptions & {prefix?: string} = {},
+): string | undefined {
+  if (!isAssistantMessage(event)) {
+    return undefined;
+  }
+
+  const style = createStyle(options.color);
+  const prefix = options.prefix ?? 'agent';
+  return [
+    style.dim(prefix),
+    style.dim(timestampLabel(event.timestamp)),
+    style.magenta.bold('message'),
+    formatAssistantMessage(event, 2000),
+  ].join('  ');
+}
+
+function formatAssistantMessage(
+  event: AgentQEvent,
+  maxLength: number,
+): string | undefined {
+  if (!event.message) {
+    return undefined;
+  }
+
+  const message = compact(event.message, maxLength);
+  return event.phase ? `[${event.phase}] ${message}` : message;
+}
+
+function isAssistantMessage(event: AgentQEvent): boolean {
+  return event.kind === 'assistant_message' && Boolean(event.message);
+}
+
+function formatHarnessProgressLabel(step: HarnessProgressStep): string {
+  return step.detail ? `${step.label} ${step.detail}` : step.label;
+}
+
+function formatHarnessProgressDetail(
+  step: HarnessProgressStep,
+  activity: string | undefined,
+): string | undefined {
+  if (step.detail && activity) {
+    return `${step.detail}: ${activity}`;
+  }
+  return activity ?? step.detail;
+}
+
+function noopProgressRenderer(): ProgressRenderer {
+  return {
+    onEvent: () => undefined,
+    stop: () => undefined,
+  };
+}
+
+function noopHarnessProgressRenderer(): HarnessProgressRenderer {
+  return {
+    finishStep: () => undefined,
+    onEvent: () => undefined,
+    startStep: () => undefined,
+    stop: () => undefined,
+  };
+}
+
+function statusGlyph(
+  status: HarnessProgressResult['status'],
+  style: ChalkStyle,
+): string {
+  if (status === 'success') {
+    return style.green('✓');
+  }
+  if (status === 'blocked') {
+    return style.yellow('!');
+  }
+  return style.red('✗');
+}
+
+function statusLabel(
+  status: HarnessProgressResult['status'],
+  style: ChalkStyle,
+): string {
+  if (status === 'success') {
+    return style.green('done');
+  }
+  if (status === 'blocked') {
+    return style.yellow('blocked');
+  }
+  return style.red('failed');
 }
 
 function eventLabel(event: AgentQEvent): string | undefined {
@@ -334,7 +820,7 @@ function eventLabel(event: AgentQEvent): string | undefined {
     return 'start';
   }
   if (event.kind === 'assistant_message') {
-    return 'think';
+    return 'message';
   }
   if (event.kind === 'tool_started') {
     return 'tool';
@@ -440,6 +926,30 @@ function summarizeFiles(files: ChangedFileSummary[]): string {
   return `${files.length} ${files.length === 1 ? 'file' : 'files'} changed`;
 }
 
+function formatTokenUsageSummary(
+  tokenUsage: RunMetadata['tokenUsage'],
+  options: {compact: boolean},
+): string {
+  if (!tokenUsage) {
+    return 'tokens: n/a';
+  }
+
+  const fields = [
+    ['input', formatTokenValue(tokenUsage.inputTokens, options.compact)],
+    ['output', formatTokenValue(tokenUsage.outputTokens, options.compact)],
+    ['cached', formatTokenValue(tokenUsage.cachedInputTokens, options.compact)],
+    [
+      'reasoning',
+      formatTokenValue(tokenUsage.reasoningOutputTokens, options.compact),
+    ],
+    ['total', formatTokenValue(tokenUsage.totalTokens, options.compact)],
+  ] as const;
+
+  return `tokens: ${fields
+    .map(([label, value]) => `${label} ${value ?? 'n/a'}`)
+    .join(' · ')}`;
+}
+
 function formatChangedFiles(
   files: ChangedFileSummary[],
   style: ChalkStyle,
@@ -528,6 +1038,33 @@ function formatDuration(ms: number | undefined): string {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-US').format(value);
+}
+
+function compactTokenCount(value: number | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value >= 1_000) {
+    return `${Math.round(value / 1_000)}k`;
+  }
+
+  return String(value);
+}
+
+function formatTokenValue(
+  value: number | undefined,
+  compact: boolean,
+): string | undefined {
+  return compact ? compactTokenCount(value) : formatTokenCount(value);
+}
+
+function formatTokenCount(value: number | undefined): string {
+  if (value === undefined) {
+    return 'n/a';
+  }
+
+  return formatNumber(value);
 }
 
 function runDirName(path: string): string {

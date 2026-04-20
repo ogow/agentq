@@ -1,0 +1,24 @@
+name: devloop
+
+inputs:
+  task: string
+
+steps:
+  - id: split
+    agent: task-splitter
+
+  - id: implement
+    loop:
+      over: "{{split.tasks}}"
+      retries: 1
+      steps:
+        - id: build
+          agent: harness-builder
+        - id: typecheck
+          command: ["bun", "run", "typecheck"]
+        - id: lint
+          command: ["bun", "run", "lint"]
+        - id: tests
+          command: ["bun", "test"]
+        - id: review
+          agent: harness-reviewer

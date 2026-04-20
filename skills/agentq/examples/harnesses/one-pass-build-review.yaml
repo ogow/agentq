@@ -1,0 +1,14 @@
+name: one-pass-build-review
+
+inputs:
+  task: string
+
+steps:
+  - id: build
+    agent: harness-builder
+
+  - id: verify
+    command: ["bun", "--version"]
+
+  - id: review
+    agent: harness-reviewer

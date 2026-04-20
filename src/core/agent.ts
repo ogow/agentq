@@ -6,6 +6,7 @@ import {parseMarkdownFrontmatter} from './frontmatter';
 import type {
   AgentQConfig,
   AgentFrontmatter,
+  AgentScope,
   EffectiveRunConfig,
   ResultMode,
   ResolvedAgent,
@@ -34,12 +35,21 @@ const REASONING_EFFORTS = [
 ] as const;
 const RESULT_MODES = ['plain', 'json'] as const;
 const ARTIFACTS_PLACEHOLDER = '{{artifacts}}';
+const RESERVED_ENV_KEYS = new Set(['path', 'pathext']);
 
 export async function readAgentFile(
   filePath: string,
-  scope: 'project' | 'global',
+  scope: AgentScope,
 ): Promise<ResolvedAgent> {
   const markdown = await readFile(filePath, 'utf8');
+  return readAgentMarkdown(markdown, filePath, scope);
+}
+
+export function readAgentMarkdown(
+  markdown: string,
+  filePath: string,
+  scope: AgentScope,
+): ResolvedAgent {
   const parsed = parseMarkdownFrontmatter(markdown);
   const frontmatter = normalizeAgentFrontmatter(parsed.data, filePath);
 
@@ -250,6 +260,12 @@ function readOptionalStringRecord(
 
   const env: Record<string, string> = {};
   for (const [envKey, envValue] of Object.entries(value)) {
+    if (RESERVED_ENV_KEYS.has(envKey.toLowerCase())) {
+      throw new AgentQError(
+        `Agent env field "${envKey}" is reserved and cannot be overridden.`,
+      );
+    }
+
     if (typeof envValue !== 'string') {
       throw new AgentQError(`Agent env value "${envKey}" must be a string.`);
     }

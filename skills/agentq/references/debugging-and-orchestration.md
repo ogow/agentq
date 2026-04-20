@@ -42,9 +42,46 @@ Agent output is hard to use:
 - Prefer short sections: Outcome, Changes/Findings, Verification, Artifacts, Next.
 - Use schema-like output only when another tool or orchestrator must parse it.
 
+## Harness Versus Manual Orchestration
+
+Prefer `agentq harness` when the workflow itself should be inspectable and repeatable. Harnesses own planning, explicit step ordering, command steps, step results, feedback, and durable run records.
+
+Use manual orchestration from a main agent only when the workflow is exploratory or not yet stable enough to encode as a harness.
+
+For implementation workflows, start with one general build agent. Use check steps and reviewer steps to produce feedback, then let the harness send that feedback and any useful artifact paths back to the same build agent for a bounded retry.
+
+For splitter-led loops:
+
+- Require a visible one-time splitter step, normally `task-splitter`, before the loop step.
+- Put repairable build/check/review work under `loop.steps`.
+- Use `loop.retries` as the retry budget.
+- Inspect the splitter step result in `tasks.json` before changing the splitter prompt.
+
 ## Main Agent Orchestration
 
 A main agent can orchestrate AgentQ agents by treating `agentq run` as a delegation tool. This is useful when the user wants a high-level agent to coordinate specialized local agents while keeping each run inspectable.
+
+For planning work, use `agentq run` before `agentq harness`. The main LLM can
+delegate exploratory research to focused agents, read their saved outputs, and
+then produce a plan file for the harness to implement.
+
+Planning flow:
+
+```text
+talk with user -> run research agents -> read output.md/run.json -> write plan.md -> agentq harness run work --input-file plan.md
+```
+
+Good planning research agents have narrow jobs:
+
+| Agent            | Purpose                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| Browser explorer | Navigate the test app and report pages, actions, selectors, validation behavior, and uncertainties. |
+| Test inventory   | Inspect existing tests and report current coverage, gaps, and likely files.                         |
+| Code mapper      | Inspect implementation code and report relevant modules, contracts, and risks.                      |
+
+Keep research output evidence-based. Ask agents to include what they inspected,
+what they found, what remains uncertain, and recommended plan items. Do not use
+the harness for exploratory research; use it after the plan is ready.
 
 Use this pattern:
 
@@ -91,3 +128,5 @@ Final answer must include:
 ## When Not To Orchestrate
 
 Do not use a main agent when one focused `agentq run` is enough. Orchestration adds latency and complexity. Use it when tasks are naturally separable, require different sandbox/model settings, or benefit from specialist prompts.
+
+Do not split implementation into separate "new feature" and "fix previous issue" agents by default. Split only when the work truly needs different permissions, tools, or review standards.

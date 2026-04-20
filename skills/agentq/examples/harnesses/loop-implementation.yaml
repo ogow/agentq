@@ -1,0 +1,20 @@
+name: loop-implementation
+
+inputs:
+  task: string
+
+steps:
+  - id: split
+    agent: task-splitter
+
+  - id: implement
+    loop:
+      over: "{{split.tasks}}"
+      retries: 1
+      steps:
+        - id: build
+          agent: harness-builder
+        - id: verify
+          command: ["bun", "--version"]
+        - id: review
+          agent: harness-reviewer

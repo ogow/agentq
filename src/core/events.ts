@@ -6,15 +6,21 @@ import type {
 } from './types';
 
 interface CodexJsonEvent {
+  item?: unknown;
   payload?: unknown;
   timestamp?: unknown;
   type?: unknown;
+  usage?: unknown;
 }
 
 interface CodexPayload {
+  aggregated_output?: unknown;
   arguments?: unknown;
   call_id?: unknown;
+  command?: unknown;
   content?: unknown;
+  exit_code?: unknown;
+  id?: unknown;
   info?: unknown;
   input?: unknown;
   last_agent_message?: unknown;
@@ -23,6 +29,8 @@ interface CodexPayload {
   output?: unknown;
   phase?: unknown;
   status?: unknown;
+  summary?: unknown;
+  text?: unknown;
   type?: unknown;
 }
 
@@ -52,12 +60,86 @@ export function normalizeCodexEvent(event: CodexJsonEvent): AgentQEvent {
   const payload = readObject(event.payload);
   const payloadType = readString(payload?.type);
 
+  if (rawType === 'turn.started') {
+    return {
+      kind: 'run_started',
+      provider: 'codex',
+      rawType,
+      timestamp,
+    };
+  }
+
+  if (rawType === 'turn.completed') {
+    return {
+      kind: 'token_usage',
+      provider: 'codex',
+      rawType,
+      timestamp,
+      tokenUsage: readFlatTokenUsage(event.usage),
+    };
+  }
+
+  if (rawType === 'item.started' || rawType === 'item.completed') {
+    return normalizeCodexItemEvent(event, rawType, timestamp);
+  }
+
   if (rawType === 'event_msg') {
     return normalizeCodexEventMessage(payload, payloadType, rawType, timestamp);
   }
 
   if (rawType === 'response_item') {
     return normalizeCodexResponseItem(payload, payloadType, rawType, timestamp);
+  }
+
+  return {
+    kind: 'unknown',
+    provider: 'codex',
+    rawType,
+    timestamp,
+  };
+}
+
+function normalizeCodexItemEvent(
+  event: CodexJsonEvent,
+  rawType: string,
+  timestamp: string | undefined,
+): AgentQEvent {
+  const item = readObject(event.item);
+  const itemType = readString(item?.type);
+
+  if (itemType === 'agent_message') {
+    return {
+      kind: 'assistant_message',
+      message: readString(item?.text),
+      provider: 'codex',
+      rawType,
+      timestamp,
+    };
+  }
+
+  if (itemType === 'command_execution') {
+    const command = readString(item?.command);
+    const exitCode = readNumber(item?.exit_code);
+    const failed =
+      rawType === 'item.completed' && exitCode !== undefined && exitCode !== 0;
+
+    return {
+      callId: readString(item?.id),
+      command,
+      exitCode: exitCode ?? null,
+      kind: rawType === 'item.started' ? 'tool_started' : 'tool_finished',
+      message: readString(item?.aggregated_output)?.trim().slice(0, 500),
+      provider: 'codex',
+      rawType,
+      status:
+        rawType === 'item.started'
+          ? 'running'
+          : failed
+            ? 'failed'
+            : 'completed',
+      timestamp,
+      toolName: 'command_execution',
+    };
   }
 
   return {
@@ -249,6 +331,21 @@ function normalizeCodexResponseItem(
     };
   }
 
+  if (payloadType === 'reasoning' || payloadType === 'reasoning_summary') {
+    return {
+      kind: 'assistant_message',
+      message:
+        readMessageContent(payload?.content) ??
+        readString(payload?.summary) ??
+        readString(payload?.text) ??
+        readString(payload?.message),
+      phase: readString(payload?.phase) ?? 'reasoning',
+      provider: 'codex',
+      rawType,
+      timestamp,
+    };
+  }
+
   return {
     kind: 'unknown',
     provider: 'codex',
@@ -271,6 +368,29 @@ function readTokenUsage(value: unknown): TokenUsageSummary | undefined {
     outputTokens: readNumber(usage.output_tokens),
     reasoningOutputTokens: readNumber(usage.reasoning_output_tokens),
     totalTokens: readNumber(usage.total_tokens),
+  };
+}
+
+function readFlatTokenUsage(value: unknown): TokenUsageSummary | undefined {
+  const usage = readObject(value);
+  if (!usage) {
+    return undefined;
+  }
+
+  const inputTokens = readNumber(usage.input_tokens);
+  const outputTokens = readNumber(usage.output_tokens);
+  const totalTokens =
+    readNumber(usage.total_tokens) ??
+    (inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens
+      : undefined);
+
+  return {
+    cachedInputTokens: readNumber(usage.cached_input_tokens),
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens: readNumber(usage.reasoning_output_tokens),
+    totalTokens,
   };
 }
 

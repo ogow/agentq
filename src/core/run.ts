@@ -6,6 +6,7 @@ import {summarizeTokenUsage} from './events';
 import type {AgentProvider} from '../providers/provider';
 import {CodexProvider} from '../providers/codex';
 import type {
+  ProcessMetadata,
   PreparedRun,
   ProviderRunResult,
   RunFailureMetadata,
@@ -50,22 +51,39 @@ export async function runAgent(
 ): Promise<RunResult> {
   const prepared = await prepareRun(request);
   const startedAt = new Date();
-  const metadata = buildStartedMetadata(prepared, startedAt);
+  let metadata = buildStartedMetadata(
+    prepared,
+    startedAt,
+    request.runtimeParent,
+  );
   await writeMetadata(prepared.paths.runJsonPath, metadata);
 
   try {
     const providerResult = await provider.run(prepared, {
       agentId: prepared.agent.id,
       color: request.color,
+      logLevel: request.logLevel,
+      onEvent: request.onEvent,
+      onSpawn: async process => {
+        metadata = {
+          ...metadata,
+          process,
+        };
+        await writeMetadata(prepared.paths.runJsonPath, metadata);
+      },
+      processRegistry: request.processRegistry,
+      progress: request.progress,
+      runtimeParent: request.runtimeParent,
       verbose: request.verbose,
     });
     const completedAt = new Date();
     const status = statusFromProviderResult(
       providerResult.exitCode,
+      providerResult.interrupted === true,
       providerResult.timedOut,
     );
 
-    await writeMetadata(prepared.paths.runJsonPath, {
+    metadata = {
       ...metadata,
       changedFiles: providerResult.changedFiles,
       completedAt: completedAt.toISOString(),
@@ -77,7 +95,17 @@ export async function runAgent(
       timedOut: providerResult.timedOut,
       tokenUsage: summarizeTokenUsage(providerResult.events),
       toolUsage: providerResult.toolUsage,
-    });
+      process: completeProcessMetadata(
+        metadata.process,
+        completedAt,
+        providerResult.timedOut
+          ? 'timeout'
+          : providerResult.interrupted
+            ? 'interrupted'
+            : 'exit',
+      ),
+    };
+    await writeMetadata(prepared.paths.runJsonPath, metadata);
 
     return {
       agentId: prepared.agent.id,
@@ -89,7 +117,7 @@ export async function runAgent(
     };
   } catch (error) {
     const completedAt = new Date();
-    await writeMetadata(prepared.paths.runJsonPath, {
+    metadata = {
       ...metadata,
       completedAt: completedAt.toISOString(),
       durationMs: completedAt.getTime() - startedAt.getTime(),
@@ -101,7 +129,9 @@ export async function runAgent(
       },
       status: 'failed',
       timedOut: false,
-    });
+      process: completeProcessMetadata(metadata.process, completedAt, 'error'),
+    };
+    await writeMetadata(prepared.paths.runJsonPath, metadata);
 
     throw error;
   }
@@ -109,8 +139,12 @@ export async function runAgent(
 
 function statusFromProviderResult(
   exitCode: number | null,
+  interrupted: boolean,
   timedOut: boolean,
 ): RunStatus {
+  if (interrupted) {
+    return 'interrupted';
+  }
   if (timedOut) {
     return 'timed_out';
   }
@@ -135,6 +169,15 @@ function buildFailureMetadata(
       timedOut: true,
     };
   }
+  if (status === 'interrupted') {
+    return {
+      exitCode: providerResult.exitCode,
+      kind: 'provider_exit',
+      message: 'Run was interrupted and the provider process tree was stopped.',
+      stderrTail: tail(providerResult.stderr),
+      timedOut: false,
+    };
+  }
 
   return {
     exitCode: providerResult.exitCode,
@@ -152,6 +195,22 @@ function tail(value: string, maxLength = 4000): string | undefined {
   }
 
   return trimmed.slice(-maxLength);
+}
+
+function completeProcessMetadata(
+  process: ProcessMetadata | undefined,
+  completedAt: Date,
+  stopReason: string,
+): ProcessMetadata | undefined {
+  if (!process) {
+    return undefined;
+  }
+
+  return {
+    ...process,
+    stoppedAt: completedAt.toISOString(),
+    stopReason,
+  };
 }
 
 function errorMessage(error: unknown): string {

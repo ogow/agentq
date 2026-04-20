@@ -62,19 +62,19 @@ Use anchors sparingly and consistently:
 - `<verification>`: commands, checks, or evidence expected before claiming success.
 - `<handoff>`: optional format for an orchestrator or later human.
 
-Good agents are narrow. Prefer one job per agent: reviewer, fixer, summarizer, test-writer, release-note drafter, migration planner.
+Good agents are narrow, but avoid splitting roles just because task history changes. A build agent can handle both new implementation and repair when the harness provides clear feedback. Use specialist agents for genuinely different jobs such as review, summarization, test writing, release notes, or migration planning.
 
 ## Model And Reasoning Choice
 
 Use the cheapest model/reasoning pair that reliably does the job. Prefer local project defaults when they exist.
 
-| Agent work | Model tier | Reasoning |
-| --- | --- | --- |
-| Formatting, summarizing, listing, simple extraction | smaller/mini | `none` or `minimal` |
-| Focused review, simple code edits, docs updates | smaller/mini or default frontier | `low` |
-| Multi-file code changes, debugging, migration planning | frontier | `medium` |
-| Complex architecture, ambiguous failures, security-sensitive review | frontier | `high` |
-| Rare deep investigation where cost/latency is acceptable | strongest frontier | `xhigh` |
+| Agent work                                                          | Model tier                       | Reasoning           |
+| ------------------------------------------------------------------- | -------------------------------- | ------------------- |
+| Formatting, summarizing, listing, simple extraction                 | smaller/mini                     | `none` or `minimal` |
+| Focused review, simple code edits, docs updates                     | smaller/mini or default frontier | `low`               |
+| Multi-file code changes, debugging, migration planning              | frontier                         | `medium`            |
+| Complex architecture, ambiguous failures, security-sensitive review | frontier                         | `high`              |
+| Rare deep investigation where cost/latency is acceptable            | strongest frontier               | `xhigh`             |
 
 Practical defaults:
 
@@ -86,7 +86,7 @@ Practical defaults:
 ## Sandbox And Timeout Choice
 
 - `read-only`: reviewers, summarizers, planners, auditors.
-- `workspace-write`: builders, fixers, test writers, docs writers.
+- `workspace-write`: builders, test writers, docs writers.
 - `danger-full-access`: only for agents that truly need access outside the workspace; explain why in the agent or run task.
 
 Timeout guidance:
@@ -102,6 +102,7 @@ Tell agents to end with practical output:
 
 ```md
 Final answer should include:
+
 - Outcome: succeeded, blocked, or partial.
 - What changed or what was found.
 - Verification performed.
@@ -133,7 +134,7 @@ Artifacts:
 Next:
 ```
 
-Recommended JSON envelope:
+Recommended JSON envelope for non-harness scripts or custom orchestrators:
 
 ```json
 {
@@ -151,11 +152,15 @@ Recommended JSON envelope:
 }
 ```
 
-For harnessed agents, include enough fields for feedback and retry:
+For harnessed worker, reviewer, and validation agents, use the shared `AgentOutput` contract:
 
-- `outcome`: `succeeded`, `partial`, or `blocked`.
+- `status`: `success`, `failed`, or `blocked`.
 - `summary`: short human-readable result.
-- `artifacts`: paths under the run artifact directory from `{{artifacts}}`.
-- `verification`: commands or checks performed, plus status.
-- `blocked_reason`: why the harness should not treat the run as successful.
-- `next`: concrete retry or follow-up instruction when useful.
+- `failureKind`: optional failure category such as `implementation`, `check`, `review`, `plan`, `blocked`, or `environment`.
+- `result`: optional machine-readable task result, usually `{changedFiles: [], verification: []}` for build agents.
+- `feedback`: `null` or a problem object when failed or blocked.
+- `artifacts`: optional stable artifact objects.
+
+Agents running inside a harness must not include `nextTask`, `nextAgent`, retry policy, or routing instructions. The harness owns those decisions.
+
+For splitter agents that feed loop items, return the same `AgentOutput` contract and put loop items under `result.tasks`, as documented in [harnesses.md](harnesses.md).

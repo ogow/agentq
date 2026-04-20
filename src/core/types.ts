@@ -1,3 +1,5 @@
+import type {ProcessRegistry} from './processes';
+
 export type SandboxMode =
   | 'read-only'
   | 'workspace-write'
@@ -9,7 +11,29 @@ export type ApprovalPolicy =
   | 'on-request'
   | 'never';
 
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'timed_out';
+export type RunStatus =
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'timed_out'
+  | 'interrupted';
+
+export type WorkKind = 'agent' | 'harness';
+
+export interface RunParentLink {
+  kind: WorkKind;
+  runId: string;
+  stepId?: string;
+}
+
+export interface ProcessMetadata {
+  command: string;
+  host: string;
+  pid: number;
+  startedAt: string;
+  stoppedAt?: string;
+  stopReason?: string;
+}
 
 export type AgentScope = 'project' | 'global';
 
@@ -24,6 +48,13 @@ export type ReasoningEffort =
   | 'xhigh';
 
 export type ResultMode = 'plain' | 'json';
+
+export type LogLevel =
+  | 'progress'
+  | 'messages'
+  | 'verbose'
+  | 'json'
+  | 'json-messages';
 
 export interface AgentFrontmatter {
   description: string;
@@ -87,7 +118,12 @@ export interface RunPaths {
 export interface RunRequest {
   agentId: string;
   color?: boolean;
+  logLevel?: LogLevel;
+  onEvent?: (event: AgentQEvent) => void;
   overrides?: RunOverrides;
+  runtimeParent?: RunParentLink;
+  processRegistry?: ProcessRegistry;
+  progress?: boolean;
   projectCwd: string;
   task: string;
   verbose?: boolean;
@@ -107,6 +143,7 @@ export interface ProviderRunResult {
   changedFiles: ChangedFileSummary[];
   events: AgentQEvent[];
   exitCode: number | null;
+  interrupted?: boolean;
   stderr: string;
   timedOut: boolean;
   toolUsage: ToolUsageSummary[];
@@ -189,4 +226,47 @@ export interface RunFailureMetadata {
   message: string;
   stderrTail?: string;
   timedOut: boolean;
+}
+
+export type HarnessStepStatus = 'success' | 'failed' | 'blocked';
+
+export type FailureKind =
+  | 'implementation'
+  | 'check'
+  | 'review'
+  | 'plan'
+  | 'blocked'
+  | 'environment';
+
+export interface AgentFeedback {
+  problem: string;
+  cause?: string;
+  evidence?: string[];
+  fix?: string;
+}
+
+export interface ArtifactRef {
+  name: string;
+  kind: 'file' | 'directory' | 'log' | 'patch' | 'json' | 'text';
+  path: string;
+  description?: string;
+}
+
+export interface AgentOutput {
+  status: HarnessStepStatus;
+  summary: string;
+  result: unknown | null;
+  feedback: AgentFeedback | null;
+  artifacts: ArtifactRef[];
+  failureKind?: FailureKind;
+}
+
+export interface StepResult extends AgentOutput {
+  stepId: string;
+  kind: 'agent' | 'command' | 'loop';
+  startedAt: string;
+  finishedAt: string;
+  runDir?: string;
+  command?: string;
+  exitCode?: number | null;
 }

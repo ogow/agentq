@@ -27,26 +27,25 @@ bun install @opentui/react @opentui/core react
 
 ```json
 {
-   "compilerOptions": {
-      "lib": ["ESNext", "DOM"],
-      "target": "ESNext",
-      "module": "NodeNext",
-      "moduleResolution": "NodeNext",
-
-      "jsx": "react-jsx",
-      "jsxImportSource": "@opentui/react",
-
-      "strict": true,
-      "skipLibCheck": true,
-      "noEmit": true,
-      "types": ["bun-types"]
-   },
-   "include": ["src/**/*"]
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
+    
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["bun-types"]
+  },
+  "include": ["src/**/*"]
 }
 ```
 
 **Critical settings:**
-
 - `jsx: "react-jsx"` - Use the new JSX transform
 - `jsxImportSource: "@opentui/react"` - Import JSX runtime from OpenTUI
 - `module` / `moduleResolution: "NodeNext"` - Recommended for OpenTUI compatibility
@@ -61,24 +60,24 @@ The `DOM` lib is needed for React types. OpenTUI's JSX types extend React's.
 
 ```json
 {
-   "name": "my-tui-app",
-   "type": "module",
-   "scripts": {
-      "start": "bun run src/index.tsx",
-      "dev": "bun --watch run src/index.tsx",
-      "test": "bun test",
-      "build": "bun build src/index.tsx --outdir=dist --target=bun"
-   },
-   "dependencies": {
-      "@opentui/core": "latest",
-      "@opentui/react": "latest",
-      "react": ">=19.0.0"
-   },
-   "devDependencies": {
-      "@types/bun": "latest",
-      "@types/react": ">=19.0.0",
-      "typescript": "latest"
-   }
+  "name": "my-tui-app",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.tsx",
+    "dev": "bun --watch run src/index.tsx",
+    "test": "bun test",
+    "build": "bun build src/index.tsx --outdir=dist --target=bun"
+  },
+  "dependencies": {
+    "@opentui/core": "latest",
+    "@opentui/react": "latest",
+    "react": ">=19.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": ">=19.0.0",
+    "typescript": "latest"
+  }
 }
 ```
 
@@ -104,34 +103,34 @@ my-tui-app/
 ### Entry Point (src/index.tsx)
 
 ```tsx
-import { createCliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
-import { App } from "./App";
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+import { App } from "./App"
 
 const renderer = await createCliRenderer({
-   exitOnCtrlC: true
-});
+  exitOnCtrlC: true,
+})
 
-createRoot(renderer).render(<App />);
+createRoot(renderer).render(<App />)
 ```
 
 ### App Component (src/App.tsx)
 
 ```tsx
-import { Header } from "./components/Header";
-import { Sidebar } from "./components/Sidebar";
-import { MainContent } from "./components/MainContent";
+import { Header } from "./components/Header"
+import { Sidebar } from "./components/Sidebar"
+import { MainContent } from "./components/MainContent"
 
 export function App() {
-   return (
-      <box flexDirection="column" width="100%" height="100%">
-         <Header />
-         <box flexDirection="row" flexGrow={1}>
-            <Sidebar />
-            <MainContent />
-         </box>
+  return (
+    <box flexDirection="column" width="100%" height="100%">
+      <Header />
+      <box flexDirection="row" flexGrow={1}>
+        <Sidebar />
+        <MainContent />
       </box>
-   );
+    </box>
+  )
 }
 ```
 
@@ -140,29 +139,29 @@ export function App() {
 ### createCliRenderer Options
 
 ```tsx
-import { createCliRenderer, ConsolePosition } from "@opentui/core";
+import { createCliRenderer, ConsolePosition } from "@opentui/core"
 
 const renderer = await createCliRenderer({
-   // Rendering
-   targetFPS: 60,
-
-   // Behavior
-   exitOnCtrlC: true, // Set false to handle Ctrl+C yourself
-   autoFocus: true, // Auto-focus elements on click (default: true)
-   useMouse: true, // Enable mouse support (default: true)
-
-   // Debug console
-   consoleOptions: {
-      position: ConsolePosition.BOTTOM,
-      sizePercent: 30,
-      startInDebugMode: false
-   },
-
-   // Cleanup
-   onDestroy: () => {
-      // Cleanup code
-   }
-});
+  // Rendering
+  targetFPS: 60,
+  
+  // Behavior
+  exitOnCtrlC: true,        // Set false to handle Ctrl+C yourself
+  autoFocus: true,          // Auto-focus elements on click (default: true)
+  useMouse: true,           // Enable mouse support (default: true)
+  
+  // Debug console
+  consoleOptions: {
+    position: ConsolePosition.BOTTOM,
+    sizePercent: 30,
+    startInDebugMode: false,
+  },
+  
+  // Cleanup
+  onDestroy: () => {
+    // Cleanup code
+  },
+})
 ```
 
 ## Building for Distribution
@@ -172,11 +171,11 @@ const renderer = await createCliRenderer({
 ```typescript
 // build.ts
 await Bun.build({
-   entrypoints: ["./src/index.tsx"],
-   outdir: "./dist",
-   target: "bun",
-   minify: true
-});
+  entrypoints: ["./src/index.tsx"],
+  outdir: "./dist",
+  target: "bun",
+  minify: true,
+})
 ```
 
 Run: `bun run build.ts`
@@ -186,14 +185,14 @@ Run: `bun run build.ts`
 ```typescript
 // build.ts
 await Bun.build({
-   entrypoints: ["./src/index.tsx"],
-   outdir: "./dist",
-   target: "bun",
-   compile: {
-      target: "bun-darwin-arm64", // or bun-linux-x64, etc.
-      outfile: "my-app"
-   }
-});
+  entrypoints: ["./src/index.tsx"],
+  outdir: "./dist",
+  target: "bun",
+  compile: {
+    target: "bun-darwin-arm64",  // or bun-linux-x64, etc.
+    outfile: "my-app",
+  },
+})
 ```
 
 ## Environment Variables
@@ -212,7 +211,7 @@ API_URL=https://api.example.com
 Bun auto-loads `.env` files. Access via `process.env`:
 
 ```tsx
-const apiUrl = process.env.API_URL;
+const apiUrl = process.env.API_URL
 ```
 
 ## React DevTools
@@ -222,13 +221,11 @@ OpenTUI React supports React DevTools for debugging.
 ### Setup
 
 1. Install DevTools as a dev dependency (must use version 7):
-
    ```bash
    bun add react-devtools-core@7 -d
    ```
 
 2. Run DevTools standalone app:
-
    ```bash
    npx react-devtools@7
    ```
@@ -250,16 +247,16 @@ OpenTUI checks for `process.env["DEV"] === "true"` at startup. When true, it dyn
 
 ```typescript
 // src/test-utils.tsx
-import { createTestRenderer } from "@opentui/core/testing";
-import { createRoot } from "@opentui/react";
+import { createTestRenderer } from "@opentui/core/testing"
+import { createRoot } from "@opentui/react"
 
 export async function renderForTest(
-   element: React.ReactElement,
-   options = { width: 80, height: 24 }
+  element: React.ReactElement,
+  options = { width: 80, height: 24 }
 ) {
-   const testSetup = await createTestRenderer(options);
-   createRoot(testSetup.renderer).render(element);
-   return testSetup;
+  const testSetup = await createTestRenderer(options)
+  createRoot(testSetup.renderer).render(element)
+  return testSetup
 }
 ```
 
@@ -285,10 +282,10 @@ Ensure `jsxImportSource` is set:
 
 ```json
 {
-   "compilerOptions": {
-      "jsx": "react-jsx",
-      "jsxImportSource": "@opentui/react"
-   }
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react"
+  }
 }
 ```
 

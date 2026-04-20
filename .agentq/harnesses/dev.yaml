@@ -1,0 +1,14 @@
+name: dev
+agent: harness-builder
+retries: 1
+
+inputs:
+  task: string
+
+checks:
+  - id: typecheck
+    command: ["bun", "run", "typecheck"]
+  - id: lint
+    command: ["bun", "run", "lint"]
+  - id: tests
+    command: ["bun", "test"]

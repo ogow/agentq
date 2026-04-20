@@ -210,6 +210,25 @@ Write output.md.
     );
   });
 
+  test('rejects agent env values that override process lookup paths', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-'));
+    const filePath = join(root, 'bad-env.md');
+    await writeFile(
+      filePath,
+      VALID_AGENT.replace(
+        'timeout: 1m',
+        `timeout: 1m
+env:
+  PATH: C:\\not\\real`,
+      ),
+      'utf8',
+    );
+
+    await expect(readAgentFile(filePath, 'project')).rejects.toThrow(
+      'reserved',
+    );
+  });
+
   test('requires task and artifacts anchors', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-'));
     const filePath = join(root, 'bad.md');
@@ -240,4 +259,29 @@ missing anchors
     expect(agent.scope).toBe('project');
     expect(agent.filePath).toBe(join(agentsDir, 'example.md'));
   });
+
+  test('does not resolve embedded agents', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-'));
+    const restoreHome = useHome(root);
+
+    try {
+      await expect(resolveAgent(root, 'harness-builder')).rejects.toThrow(
+        'Could not find agent "harness-builder" in .agentq/agents or',
+      );
+    } finally {
+      restoreHome();
+    }
+  });
 });
+
+function useHome(homePath: string): () => void {
+  const originalHome = process.env.HOME;
+  process.env.HOME = homePath;
+  return () => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+  };
+}

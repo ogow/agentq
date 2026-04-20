@@ -10,6 +10,14 @@ Every AgentQ agent should distinguish between the final answer and durable files
 
 Use an explicit `<artifacts>` contract whenever the agent may create files.
 
+The placement rule is simple:
+
+```text
+workspace source changes -> edit the project files
+agent-created supporting files -> {{artifacts}}
+run metadata and harness ledgers -> AgentQ writes them
+```
+
 ```md
 <artifacts>
 Final answer:
@@ -19,6 +27,7 @@ Final answer:
 - Include every created artifact path.
 
 Durable files:
+
 - Write additional files only when this task asks for them.
 - Write all additional files under {{artifacts}}.
 - Create exactly these files:
@@ -27,10 +36,11 @@ Durable files:
 - Do not write generated files elsewhere.
 
 When blocked:
+
 - Do not fabricate missing evidence.
 - Explain what evidence or permission is missing.
 - Do not create partial artifacts unless they are useful to the user.
-</artifacts>
+  </artifacts>
 ```
 
 For tasks that do not need files, say so:
@@ -77,26 +87,31 @@ Use this pattern for agents that review, edit, debug, or produce reusable output
 You are a focused [role].
 
 Goal:
+
 - [One job only.]
 
 Evidence:
+
 - Inspect [files/commands/context] before making claims.
 - Prefer repository evidence over assumptions.
 - If evidence is missing, return `Outcome: blocked`.
 
 Constraints:
+
 - You may [allowed actions].
 - You must not [forbidden actions].
 - Keep changes scoped to [paths or behavior].
 
 Verification:
+
 - Run or explain [specific command/check].
 - If verification cannot run, state why.
 
 Output:
+
 - Follow the artifact contract exactly.
 - Do not include unsupported claims.
-</instructions>
+  </instructions>
 
 <task>
 {{task}}
@@ -127,6 +142,7 @@ Use examples when output shape matters:
 Expected final answer example:
 
 Outcome: succeeded
+
 - Changed `src/foo.ts` to validate empty input.
 - Added `tests/foo.test.ts` for the regression case.
 - Verification: `bun test tests/foo.test.ts`
@@ -137,41 +153,50 @@ Use schema-like output only when another tool must parse it. For human-facing ag
 
 ## Harness Feedback Pattern
 
-When an agent will run inside a harness, design the JSON result so the harness can decide whether to pass, fail, retry, or ask for human help.
+When an agent will run inside a harness, design the JSON result so the harness can decide whether to pass, fail, retry, or ask for human help. Prefer one general build agent for both new implementation and repair; the harness should provide feedback when another attempt is needed.
 
-Minimum harness fields:
+Use the AgentQ harness `AgentOutput` contract:
 
 ```json
 {
-  "outcome": "succeeded",
+  "status": "success",
   "summary": "Short summary.",
-  "artifacts": [],
-  "verification": {
-    "status": "passed",
-    "commands": []
+  "failureKind": "implementation",
+  "result": {
+    "changedFiles": ["src/example.ts"],
+    "verification": ["bun test tests/example.test.ts"]
   },
-  "blocked_reason": null,
-  "next": null
+  "feedback": null,
+  "artifacts": []
 }
 ```
 
 Harness interpretation:
 
-- `outcome: "succeeded"` means the agent believes the task and verification are complete.
-- `outcome: "partial"` means useful work exists but the harness should not treat the run as fully passing.
-- `outcome: "blocked"` means the harness should provide missing context, permission, files, or a narrower task.
-- `verification.status: "failed"` means the harness should feed back the failure output if retrying.
-- `next` should be a concrete retry instruction, not a vague suggestion.
+- `status: "success"` means the agent believes the task and verification are complete.
+- `status: "failed"` means the task or validation failed, but repair may help.
+- `status: "blocked"` means the harness should provide missing context, permission, files, credentials, or a human decision.
+- `failureKind: "plan"` means retrying the same loop item unchanged should stop instead of burning retries.
+- Only `status` and `summary` are required.
+- For build agents, `result.changedFiles` and `result.verification` are the useful default knowledge.
+- `feedback` should be `null` or an object with `problem`.
+- `artifacts` should be omitted, an empty array, or artifact objects.
+- Do not include `nextTask`, `nextAgent`, routing choices, or retry policy. The harness owns those decisions.
 
-Prefer harness feedback as a new explicit task, for example:
+Keep loop feedback minimal. Usually the next build attempt only needs the current task, what went wrong, a concrete fix hint, and any artifact paths worth inspecting:
 
 ```text
-The previous run returned `Outcome: partial`.
+The previous harness step returned status "failed".
 Verification failed with:
 [paste concise failure]
 
+Relevant artifacts:
+- ~/.agentq/runs/<agent-run-id>/artifacts/focused-test-output.log
+
 Fix only the failing behavior and update the final JSON result.
 ```
+
+For splitter agents that feed loop items, use the same `AgentOutput` contract and put loop items under `result.tasks`, as documented in [harnesses.md](harnesses.md). Worker, splitter, and reviewer agents all return `AgentOutput`; the harness owns retry and routing decisions.
 
 ## Manual Hardening Loop
 

@@ -131,6 +131,155 @@ describe('run contract', () => {
     }
   });
 
+  test('persists parent links for nested agent runs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-run-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+
+    const provider: AgentProvider = {
+      run: async () => {
+        return {
+          changedFiles: [],
+          events: [{kind: 'run_started', provider: 'codex'}],
+          exitCode: 0,
+          stderr: '',
+          timedOut: false,
+          toolUsage: [],
+        };
+      },
+    };
+
+    try {
+      const result = await runAgent(
+        {
+          agentId: 'timeout-agent',
+          projectCwd,
+          runtimeParent: {
+            kind: 'harness',
+            runId: 'work-a1b2c3',
+            stepId: 'build',
+          },
+          task: 'run nested work',
+        },
+        provider,
+      );
+      const metadata = JSON.parse(
+        await readFile(result.paths.runJsonPath, 'utf8'),
+      ) as {
+        parent?: {kind: string; runId: string; stepId?: string};
+      };
+
+      expect(result.status).toBe('succeeded');
+      expect(metadata.parent).toEqual({
+        kind: 'harness',
+        runId: 'work-a1b2c3',
+        stepId: 'build',
+      });
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('records provider process metadata when the provider reports a spawn', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-run-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+
+    const provider: AgentProvider = {
+      run: async (_prepared, options) => {
+        await options.onSpawn?.({
+          command: 'codex exec',
+          host: 'local',
+          pid: 12345,
+          startedAt: '2026-04-18T10:00:00.000Z',
+        });
+        return {
+          changedFiles: [],
+          events: [{kind: 'run_started', provider: 'codex'}],
+          exitCode: 0,
+          stderr: '',
+          timedOut: false,
+          toolUsage: [],
+        };
+      },
+    };
+
+    try {
+      const result = await runAgent(
+        {
+          agentId: 'timeout-agent',
+          projectCwd,
+          task: 'record pid',
+        },
+        provider,
+      );
+      const metadata = JSON.parse(
+        await readFile(result.paths.runJsonPath, 'utf8'),
+      ) as {
+        process?: {pid: number; stoppedAt?: string; stopReason?: string};
+      };
+
+      expect(metadata.process?.pid).toBe(12345);
+      expect(metadata.process?.stoppedAt).toBeTruthy();
+      expect(metadata.process?.stopReason).toBe('exit');
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('records interrupted metadata when the provider is stopped', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-run-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+
+    const provider: AgentProvider = {
+      run: async (_prepared, options) => {
+        await options.onSpawn?.({
+          command: 'codex exec',
+          host: 'local',
+          pid: 12345,
+          startedAt: '2026-04-18T10:00:00.000Z',
+        });
+        return {
+          changedFiles: [],
+          events: [{kind: 'run_started', provider: 'codex'}],
+          exitCode: null,
+          interrupted: true,
+          stderr: '',
+          timedOut: false,
+          toolUsage: [],
+        };
+      },
+    };
+
+    try {
+      const result = await runAgent(
+        {
+          agentId: 'timeout-agent',
+          projectCwd,
+          task: 'stop the run',
+        },
+        provider,
+      );
+      const metadata = JSON.parse(
+        await readFile(result.paths.runJsonPath, 'utf8'),
+      ) as {
+        process?: {stoppedAt?: string; stopReason?: string};
+        status: string;
+      };
+
+      expect(result.status).toBe('interrupted');
+      expect(metadata.status).toBe('interrupted');
+      expect(metadata.process?.stoppedAt).toBeTruthy();
+      expect(metadata.process?.stopReason).toBe('interrupted');
+    } finally {
+      restoreHome();
+    }
+  });
+
   test('records timeout metadata when the provider times out', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-run-'));
     const restoreHome = useHome(root);

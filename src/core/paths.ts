@@ -1,15 +1,13 @@
 import {randomBytes} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {mkdir, readdir, stat} from 'node:fs/promises';
-import {homedir} from 'node:os';
 import {basename, isAbsolute, join, relative, resolve} from 'node:path';
 import {AgentQError} from './errors';
 import {readAgentFile} from './agent';
+import {agentqHome} from './home';
 import type {AgentListEntry, ResolvedAgent, RunPaths} from './types';
 
-export function agentqHome(): string {
-  return join(homedir(), '.agentq');
-}
+export {agentqHome} from './home';
 
 export function projectAgentPath(projectCwd: string, agentId: string): string {
   return join(projectCwd, '.agentq', 'agents', `${agentId}.md`);
@@ -100,6 +98,8 @@ export async function createRunPaths(agentId: string): Promise<RunPaths> {
   };
 }
 
+export {resolveHarnessRunDir} from './harness-paths';
+
 export function contextFallbackName(
   projectCwd: string,
   contextPath: string,
@@ -127,7 +127,7 @@ function relativeToProject(
 
 async function listAgentsInDirectory(
   directory: string,
-  scope: 'project' | 'global',
+  scope: AgentListEntry['scope'],
 ): Promise<AgentListEntry[]> {
   if (!existsSync(directory)) {
     return [];

@@ -5,7 +5,6 @@ OpenTUI uses the Yoga layout engine, providing CSS Flexbox-like capabilities for
 ## Overview
 
 Key concepts:
-
 - **Flexbox model**: Familiar CSS Flexbox properties
 - **Yoga engine**: Facebook's cross-platform layout engine
 - **Terminal units**: Dimensions are in character cells (columns x rows)
@@ -122,9 +121,9 @@ Space between children:
 
 ```tsx
 <box flexDirection="row" gap={2}>
-   <text>A</text>
-   <text>B</text>
-   <text>C</text>
+  <text>A</text>
+  <text>B</text>
+  <text>C</text>
 </box>
 // Output: A  B  C (2 spaces between)
 ```
@@ -137,15 +136,9 @@ How much a child should grow relative to siblings:
 
 ```tsx
 <box flexDirection="row" width={30}>
-   <box flexGrow={1}>
-      <text>1</text>
-   </box>
-   <box flexGrow={2}>
-      <text>2</text>
-   </box>
-   <box flexGrow={1}>
-      <text>1</text>
-   </box>
+  <box flexGrow={1}><text>1</text></box>
+  <box flexGrow={2}><text>2</text></box>
+  <box flexGrow={1}><text>1</text></box>
 </box>
 // Widths: 7.5 | 15 | 7.5 (1:2:1 ratio)
 ```
@@ -156,12 +149,8 @@ How much a child should shrink when space is limited:
 
 ```tsx
 <box flexDirection="row" width={20}>
-   <box width={15} flexShrink={1}>
-      <text>Shrinks</text>
-   </box>
-   <box width={15} flexShrink={0}>
-      <text>Fixed</text>
-   </box>
+  <box width={15} flexShrink={1}><text>Shrinks</text></box>
+  <box width={15} flexShrink={0}><text>Fixed</text></box>
 </box>
 ```
 
@@ -171,10 +160,8 @@ Initial size before growing/shrinking:
 
 ```tsx
 <box flexDirection="row">
-   <box flexBasis={20} flexGrow={1}>
-      Starts at 20, can grow
-   </box>
-   <box flexBasis="50%">Half of parent</box>
+  <box flexBasis={20} flexGrow={1}>Starts at 20, can grow</box>
+  <box flexBasis="50%">Half of parent</box>
 </box>
 ```
 
@@ -184,9 +171,9 @@ Override parent's alignItems for this child:
 
 ```tsx
 <box flexDirection="row" height={10} alignItems="center">
-   <text>Centered</text>
-   <text alignSelf="flex-start">Top</text>
-   <text alignSelf="flex-end">Bottom</text>
+  <text>Centered</text>
+  <text alignSelf="flex-start">Top</text>
+  <text alignSelf="flex-end">Bottom</text>
 </box>
 ```
 
@@ -196,7 +183,7 @@ Override parent's alignItems for this child:
 
 ```tsx
 <box width={40} height={10}>
-   {/* Exactly 40 columns by 10 rows */}
+  {/* Exactly 40 columns by 10 rows */}
 </box>
 ```
 
@@ -206,17 +193,22 @@ Parent must have explicit size:
 
 ```tsx
 <box width="100%" height="100%">
-   <box width="50%" height="50%">
-      {/* Half of parent */}
-   </box>
+  <box width="50%" height="50%">
+    {/* Half of parent */}
+  </box>
 </box>
 ```
 
 ### Min/Max Constraints
 
 ```tsx
-<box minWidth={20} maxWidth={60} minHeight={5} maxHeight={20}>
-   {/* Constrained sizing */}
+<box
+  minWidth={20}
+  maxWidth={60}
+  minHeight={5}
+  maxHeight={20}
+>
+  {/* Constrained sizing */}
 </box>
 ```
 
@@ -263,7 +255,9 @@ Parent must have explicit size:
 Element flows in normal document order:
 
 ```tsx
-<box position="relative">{/* Normal flow */}</box>
+<box position="relative">
+  {/* Normal flow */}
+</box>
 ```
 
 ### Absolute
@@ -272,9 +266,15 @@ Element positioned relative to nearest positioned ancestor:
 
 ```tsx
 <box position="relative" width="100%" height="100%">
-   <box position="absolute" left={10} top={5} width={20} height={5}>
-      Positioned at (10, 5)
-   </box>
+  <box
+    position="absolute"
+    left={10}
+    top={5}
+    width={20}
+    height={5}
+  >
+    Positioned at (10, 5)
+  </box>
 </box>
 ```
 
@@ -282,13 +282,13 @@ Element positioned relative to nearest positioned ancestor:
 
 ```tsx
 <box
-   position="absolute"
-   left={10} // From left edge
-   top={5} // From top edge
-   right={10} // From right edge
-   bottom={5} // From bottom edge
+  position="absolute"
+  left={10}      // From left edge
+  top={5}        // From top edge
+  right={10}     // From right edge
+  bottom={5}     // From bottom edge
 >
-   Content
+  Content
 </box>
 ```
 
@@ -326,12 +326,8 @@ Control stacking order for overlapping elements:
 
 ```tsx
 <box position="relative">
-   <box position="absolute" zIndex={1}>
-      Behind
-   </box>
-   <box position="absolute" zIndex={2}>
-      In front
-   </box>
+  <box position="absolute" zIndex={1}>Behind</box>
+  <box position="absolute" zIndex={2}>In front</box>
 </box>
 ```
 

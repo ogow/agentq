@@ -26,13 +26,13 @@ Framework references follow a 5-file pattern. Cross-cutting concepts are single-
 
 Each framework in `./references/<framework>/` contains:
 
-| File               | Purpose                            | When to Read            |
-| ------------------ | ---------------------------------- | ----------------------- |
-| `REFERENCE.md`     | Overview, when to use, quick start | **Always read first**   |
-| `api.md`           | Runtime API, components, hooks     | Writing code            |
-| `configuration.md` | Setup, tsconfig, bundling          | Configuring a project   |
-| `patterns.md`      | Common patterns, best practices    | Implementation guidance |
-| `gotchas.md`       | Pitfalls, limitations, debugging   | Troubleshooting         |
+| File | Purpose | When to Read |
+|------|---------|--------------|
+| `REFERENCE.md` | Overview, when to use, quick start | **Always read first** |
+| `api.md` | Runtime API, components, hooks | Writing code |
+| `configuration.md` | Setup, tsconfig, bundling | Configuring a project |
+| `patterns.md` | Common patterns, best practices | Implementation guidance |
+| `gotchas.md` | Pitfalls, limitations, debugging | Troubleshooting |
 
 Cross-cutting concepts in `./references/<concept>/` have `REFERENCE.md` as the entry point.
 
@@ -169,31 +169,28 @@ For component naming differences and text modifiers, see `components/REFERENCE.m
 ## Product Index
 
 ### Frameworks
-
-| Framework | Entry File                        | Description                            |
-| --------- | --------------------------------- | -------------------------------------- |
-| Core      | `./references/core/REFERENCE.md`  | Imperative API, all primitives         |
-| React     | `./references/react/REFERENCE.md` | React reconciler for declarative TUI   |
-| Solid     | `./references/solid/REFERENCE.md` | SolidJS reconciler for declarative TUI |
+| Framework | Entry File | Description |
+|-----------|------------|-------------|
+| Core | `./references/core/REFERENCE.md` | Imperative API, all primitives |
+| React | `./references/react/REFERENCE.md` | React reconciler for declarative TUI |
+| Solid | `./references/solid/REFERENCE.md` | SolidJS reconciler for declarative TUI |
 
 ### Cross-Cutting Concepts
-
-| Concept    | Entry File                             | Description                     |
-| ---------- | -------------------------------------- | ------------------------------- |
-| Layout     | `./references/layout/REFERENCE.md`     | Yoga/Flexbox layout system      |
+| Concept | Entry File | Description |
+|---------|------------|-------------|
+| Layout | `./references/layout/REFERENCE.md` | Yoga/Flexbox layout system |
 | Components | `./references/components/REFERENCE.md` | Component reference by category |
-| Keyboard   | `./references/keyboard/REFERENCE.md`   | Keyboard input handling         |
-| Animation  | `./references/animation/REFERENCE.md`  | Timeline-based animations       |
-| Testing    | `./references/testing/REFERENCE.md`    | Test renderer and snapshots     |
+| Keyboard | `./references/keyboard/REFERENCE.md` | Keyboard input handling |
+| Animation | `./references/animation/REFERENCE.md` | Timeline-based animations |
+| Testing | `./references/testing/REFERENCE.md` | Test renderer and snapshots |
 
 ### Component Categories
-
-| Category       | Entry File                                | Components                                    |
-| -------------- | ----------------------------------------- | --------------------------------------------- |
-| Text & Display | `./references/components/text-display.md` | text, ascii-font, styled text                 |
-| Containers     | `./references/components/containers.md`   | box, scrollbox, borders                       |
-| Inputs         | `./references/components/inputs.md`       | input, textarea, select, tab-select           |
-| Code & Diff    | `./references/components/code-diff.md`    | code, line-number, diff, markdown, text-table |
+| Category | Entry File | Components |
+|----------|------------|------------|
+| Text & Display | `./references/components/text-display.md` | text, ascii-font, styled text |
+| Containers | `./references/components/containers.md` | box, scrollbox, borders |
+| Inputs | `./references/components/inputs.md` | input, textarea, select, tab-select |
+| Code & Diff | `./references/components/code-diff.md` | code, line-number, diff, markdown, text-table |
 
 ## Resources
 

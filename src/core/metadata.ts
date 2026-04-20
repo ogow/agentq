@@ -1,8 +1,10 @@
 import {writeFile} from 'node:fs/promises';
 import type {
   ChangedFileSummary,
+  ProcessMetadata,
   PreparedRun,
   RunFailureMetadata,
+  RunParentLink,
   RunStatus,
   RunTokenUsageSummary,
   ToolUsageSummary,
@@ -41,6 +43,8 @@ export interface RunMetadata {
     stderr: string;
     stdout: string;
   };
+  parent?: RunParentLink;
+  process?: ProcessMetadata;
   projectCwd: string;
   startedAt: string;
   status: RunStatus;
@@ -53,6 +57,7 @@ export interface RunMetadata {
 export function buildStartedMetadata(
   prepared: PreparedRun,
   startedAt: Date,
+  parent?: RunParentLink,
 ): RunMetadata {
   return {
     agent: {
@@ -76,6 +81,7 @@ export function buildStartedMetadata(
     contextFilePath: prepared.contextFilePath,
     changedFiles: [],
     eventCount: 0,
+    parent,
     paths: {
       artifacts: prepared.paths.artifactsDirPath,
       output: prepared.paths.outputPath,
