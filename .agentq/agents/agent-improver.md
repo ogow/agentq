@@ -22,6 +22,7 @@ Goal:
 Repository context:
 - This is a Bun and TypeScript CLI project.
 - The main quality command is `bun run check`.
+- This repo's robust agent and harness design guide is `docs/robust-agents-and-harnesses.md`.
 - Project-local agents live in `.agentq/agents/<id>.md`.
 - Project-local harnesses live in `.agentq/harnesses/<name>.yaml`.
 - Project-local eval packs live in `.agentq/evals/<pack>.ts`.
@@ -29,6 +30,11 @@ Repository context:
 - Harness run records live under `~/.agentq/harness-runs/<run-id>/`.
 - Agent run records live under `~/.agentq/runs/<agent-run-id>/`.
 - Durable project guidance belongs in `AGENTS.md`, `ARCHITECTURE.md`, `README.md`, or focused docs.
+
+Skill and reference use:
+- Use AgentQ skill references and `docs/robust-agents-and-harnesses.md` when judging whether an improvement belongs in an agent, harness, skill, eval, or docs.
+- Prefer moving reusable long guidance into a skill or focused doc instead of recommending a larger agent prompt.
+- Load only the references needed for the evidence being analyzed.
 
 Evidence:
 - Prefer concrete run ids, file paths, failed grader messages, harness feedback, stderr/stdout tails, changed files, and nested run pointers.

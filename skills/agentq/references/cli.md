@@ -116,7 +116,8 @@ Common `agentq run` flags:
 - `--approval`: approval policy when supported.
 - `--context-file`: project instruction/context file for Codex discovery.
 - `--details`: print detailed metadata and artifact paths.
-- `--verbose`: stream live event activity and print detailed final output.
+- `--verbose` / `-v`: print a structured task/step timeline for harness runs.
+- `-vv`: include detailed diagnostics such as tool and command activity.
 - `--no-color`: plain terminal output.
 
 ## Run Output
@@ -130,7 +131,31 @@ Default output is compact:
 - failure summary when relevant
 - final agent output
 
-Use `--details` when a human needs metadata. Use `--verbose` when debugging behavior during execution.
+Use `--details` when a human needs agent-run metadata.
+
+Harness output modes are:
+
+| Mode | Use |
+| --- | --- |
+| default | One live TTY row plus compact task completions and final summary. |
+| `-v` | Structured task/step timeline with concise trace lines. |
+| `-vv` | Detailed diagnostics, including tool and command activity. |
+| `--jsonl` | Machine-readable events for scripts and `jq`. |
+
+Final harness summaries are line-oriented and may include aggregate token usage
+when nested agent runs report tokens:
+
+```text
+devloop-a0d2b5  success
+tasks      2 succeeded
+tries      3 total
+duration   3m 18s
+tokens     input 102k · output 6k · cached 80k · reasoning 1k · total 108k
+run        ~/.agentq/harness-runs/devloop-a0d2b5
+```
+
+`loop.retries` is still the YAML field for the retry budget. Human output may
+describe the current attempt as `try N/M`.
 
 ## Run Artifacts
 

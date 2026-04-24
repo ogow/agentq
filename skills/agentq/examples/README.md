@@ -22,7 +22,7 @@ Copy them into a project-local agent folder before running the harness examples:
 
 The example harnesses live in this installable skill at `examples/harnesses/`:
 
-- `work.yaml`: accepts a short request or a plan, splits only when useful, runs build/retry/review per task.
+- `work.yaml`: accepts a short request or a plan, splits only when useful, runs build/check/review per task.
 - `loop-implementation.yaml`: plans a broad task, writes a task ledger, then runs build, verify, and review per task.
 - `one-pass-build-review.yaml`: runs a known one-pass build, verify, review sequence.
 
@@ -46,6 +46,9 @@ Harness runs are saved under `~/.agentq/harness-runs/<run-id>/` and can be inspe
 ```sh
 agentq harness inspect <run-id-or-path>
 ```
+
+Use default output for a compact live view, `-v` for the structured task/step
+timeline, and `-vv` when debugging tool or command details.
 
 ## Eval Packs
 

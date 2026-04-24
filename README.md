@@ -4,6 +4,9 @@ AgentQ is a CLI-first wrapper for running local Codex agents and simple harnesse
 
 The v1 direction is deliberately small: AgentQ resolves readable agent files, runs `codex exec --json`, records the evidence, and makes it clear whether a process is still alive. Codex owns execution; AgentQ owns repeatable prompts, process cleanup, status, checks, and run records.
 
+For design guidance on reliable agents, harnesses, and when to move reusable
+knowledge into skills, read [Robust Agents And Harnesses](docs/robust-agents-and-harnesses.md).
+
 ## How It Fits Together
 
 ```text
@@ -92,6 +95,15 @@ bun run agentq run example --task "summarize this repo"
 When the run finishes, AgentQ prints a compact summary with status, duration, tool usage, changed files, the run directory, and the final response.
 
 Use `--details` for full artifact paths and metadata. Use `-v` for step/task structure, repeat `-v` as `-vv` for execution diagnostics, and add `--jsonl` when you want the same event stream as machine-readable lines. The same verbosity rules apply to both agent runs and harness runs.
+
+Harness output modes are split by audience:
+
+| Mode | Use |
+| --- | --- |
+| default | One live TTY row plus compact task completions and final summary. |
+| `-v` | Structured task/step timeline with concise trace lines. |
+| `-vv` | Detailed diagnostics, including tool and command activity. |
+| `--jsonl` | Machine-readable events for scripts and `jq`. |
 
 Examples:
 
@@ -193,6 +205,17 @@ tasks.json
 `log.jsonl` records harness starts, retries, check results, and pointers to nested agent run directories. Agent stdout, stderr, raw JSONL, final answers, and agent-created artifacts stay in the agent run folders under `~/.agentq/runs`. `tasks.json` is the current harness state.
 
 Default harness output stays bounded: on a TTY it keeps one live status row for the active task, and on non-TTY output it prints a compact history of completed tasks plus concise failure context. Use `-v` for a structured task/step timeline, `-vv` for tool calls and diagnostics, and `--jsonl` to stream the same event model as machine-readable lines.
+
+Final human summaries stay line-oriented and include aggregate token usage when nested agent runs report it:
+
+```text
+devloop-a0d2b5  success
+tasks      2 succeeded
+tries      3 total
+duration   3m 18s
+tokens     input 102k · output 6k · cached 80k · reasoning 1k · total 108k
+run        ~/.agentq/harness-runs/devloop-a0d2b5
+```
 
 For example, this prints the JSONL status records and filters them with `jq`:
 

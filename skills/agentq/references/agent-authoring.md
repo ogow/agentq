@@ -64,6 +64,12 @@ Use anchors sparingly and consistently:
 
 Good agents are narrow, but avoid splitting roles just because task history changes. A build agent can handle both new implementation and repair when the harness provides clear feedback. Use specialist agents for genuinely different jobs such as review, summarization, test writing, release notes, or migration planning.
 
+When a prompt grows because it is carrying reusable workflow or library
+knowledge, prefer moving that knowledge into a skill or focused reference doc.
+Keep the agent responsible for the role and output contract, not every detail it
+might ever need. See `docs/robust-agents-and-harnesses.md` for the design
+checklist.
+
 ## Model And Reasoning Choice
 
 Use the cheapest model/reasoning pair that reliably does the job. Prefer local project defaults when they exist.

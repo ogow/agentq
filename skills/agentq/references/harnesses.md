@@ -2,6 +2,9 @@
 
 Use harnesses when AgentQ should own orchestration, durable state, command checks, retries, or feedback between attempts. Keep the harness boring: agents provide results and feedback; the harness owns step order, retry limits, and terminal status.
 
+For broader design guidance on keeping agents, harnesses, skills, and evals
+small and reliable, read `docs/robust-agents-and-harnesses.md`.
+
 The mental model is:
 
 ```text
@@ -122,21 +125,10 @@ Failures are interpreted by status and optional `failureKind`:
 
 Use `failureKind: "plan"` only when the assigned task or plan is wrong and another implementation attempt would waste work.
 
-Harness agent steps can declare first-pass contracts with `requires`:
-
-```yaml
-steps:
-  - id: build
-    agent: harness-builder
-    requires:
-      result:
-        changedFiles: array
-        verification: array
-      artifacts:
-        - path: summary.md
-```
-
-Supported result kinds are `string`, `number`, `boolean`, `array`, and `object`. Artifact requirements resolve against the nested agent run's `artifacts/` directory, and AgentQ does not copy them into the harness run directory.
+When a later step or human needs specific evidence, make the expectation part of
+the agent prompt and verify it with a command, reviewer, or eval. Keep required
+result fields small and stable, usually `result.changedFiles` and
+`result.verification` for builder agents.
 
 ## Splitter Contract
 

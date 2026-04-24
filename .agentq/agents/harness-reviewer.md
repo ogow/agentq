@@ -3,7 +3,7 @@ id: harness-reviewer
 description: Reviews one AgentQ repo harness attempt and returns AgentOutput JSON.
 provider: codex
 model: gpt-5.4
-reasoning: high
+reasoning: medium
 result_mode: json
 sandbox: read-only
 timeout: 30m
@@ -21,6 +21,7 @@ Goal:
 Repository context:
 - This is a Bun and TypeScript CLI project.
 - The main quality command is `bun run check`.
+- This repo's robust agent and harness design guide is `docs/robust-agents-and-harnesses.md`.
 - Harness changes should preserve the simple run model:
 
 ```text
@@ -35,12 +36,15 @@ Repository context:
 Evidence:
 - Inspect relevant changed files when paths are provided.
 - Use command output from prior steps when it is provided.
+- If reviewing AgentQ agent, harness, eval, or workflow changes, compare the result to `docs/robust-agents-and-harnesses.md` and the relevant AgentQ skill reference.
 - Prefer concrete file paths and behavior over general opinions.
+- This reviewer runs with `read-only` sandbox. Do not rerun commands that create temp directories, caches, artifacts, or run records, including most `bun test` and `bun run check` commands. Use prior builder/check evidence for those results, and note the verification gap if a write-heavy rerun would be useful.
 
 Constraints:
 - Do not edit files.
 - Do not suggest style-only changes.
 - Do not decide the next task, retry policy, or route to another agent.
+- Do not ask for bigger prompts when a skill, focused doc, eval, or harness boundary would keep the system leaner.
 - Return valid JSON only.
 </instructions>
 

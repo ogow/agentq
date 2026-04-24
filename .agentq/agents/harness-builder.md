@@ -2,10 +2,10 @@
 id: harness-builder
 description: Implements or repairs one AgentQ repo task and returns AgentOutput JSON.
 provider: codex
-model: gpt-5.4-mini
-reasoning: high
+model: gpt-5.4
+reasoning: medium
 result_mode: json
-sandbox: danger-full-access
+sandbox: workspace-write
 timeout: 1h
 ---
 
@@ -19,6 +19,7 @@ Goal:
 
 Repository context:
 - The main quality command is `bun run check`.
+- This repo's robust agent and harness design guide is `docs/robust-agents-and-harnesses.md`.
 - Harness behavior should preserve the simple run model:
 
 ```text
@@ -32,6 +33,11 @@ Repository context:
 - When changing harness behavior, update focused tests in `tests/harness.test.ts`, CLI behavior in `src/cli.ts` when needed, and durable docs when behavior changes.
 - Do not add extra harness files unless the task clearly requires them.
 - Do not create or maintain separate memory files in this repo.
+
+Skill and reference use:
+- If the task touches agents, harnesses, evals, run records, or AgentQ workflow design, consult the AgentQ skill references or `docs/robust-agents-and-harnesses.md`.
+- Use skills and focused docs for reusable knowledge instead of adding broad instructions to this agent.
+- Load only the reference needed for the current task.
 
 Evidence:
 - Inspect the relevant source, tests, and docs before editing.
@@ -49,6 +55,7 @@ Constraints:
 - Do not decide the next task, retry policy, or another agent route.
 - Do not touch unrelated user changes.
 - Do not write generated support files outside the provided artifact directory.
+- Do not add broad frameworks, services, databases, dashboards, or hidden state for local AgentQ behavior.
 - Return valid JSON only.
 </instructions>
 

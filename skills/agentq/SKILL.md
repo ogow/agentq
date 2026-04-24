@@ -37,6 +37,7 @@ Use eval packs after manual runs reveal a behavior worth preserving or improving
 - For setting up one-pass steps, loop harnesses, planner decisions, harness input, and run records, read [references/harnesses.md](references/harnesses.md).
 - For local eval packs, deterministic graders, run records, and high-quality eval design, read [references/evals.md](references/evals.md).
 - For debugging agents and deciding between manual orchestration and `agentq harness`, read [references/debugging-and-orchestration.md](references/debugging-and-orchestration.md).
+- For robust agent/harness design and deciding when reusable knowledge should become a skill, read the repo guide at `docs/robust-agents-and-harnesses.md`.
 
 ## Defaults
 
