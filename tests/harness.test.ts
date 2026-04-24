@@ -519,6 +519,87 @@ checks:
     }
   });
 
+  test('times out a legacy harness check that does not exit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+agent: builder
+checks:
+  - id: unit
+    command: ["bun", "-e", "setInterval(() => undefined, 1000)"]
+    timeout: 50ms
+`,
+    );
+
+    const provider = outputProvider([
+      agentOutput('success', 'Ready for checks.'),
+    ]);
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        inputText: 'check it',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+      const state = JSON.parse(
+        await readFile(join(result.runDir, 'tasks.json'), 'utf8'),
+      ) as {attempts: Array<{checks: Array<{timedOut?: boolean}>}>};
+
+      expect(result.status).toBe('failed');
+      expect(result.summary).toBe('Check unit timed out after 50ms.');
+      expect(result.feedback?.problem).toBe('Check unit timed out after 50ms.');
+      expect(state.attempts[0].checks[0].timedOut).toBe(true);
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('times out a structured command step that does not exit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+steps:
+  - id: check
+    command: ["bun", "-e", "setInterval(() => undefined, 1000)"]
+    timeout: 50ms
+`,
+    );
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        name: 'work',
+        projectCwd,
+      });
+      const state = JSON.parse(
+        await readFile(join(result.runDir, 'tasks.json'), 'utf8'),
+      ) as {
+        stepResults: Record<
+          string,
+          {result: {timedOut?: boolean}; summary: string}
+        >;
+      };
+
+      expect(result.status).toBe('failed');
+      expect(result.summary).toBe('Check check timed out after 50ms.');
+      expect(state.stepResults.check.summary).toBe(
+        'Check check timed out after 50ms.',
+      );
+      expect(state.stepResults.check.result.timedOut).toBe(true);
+    } finally {
+      restoreHome();
+    }
+  });
+
   test('limits loop retries to the configured retry budget', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
     const restoreHome = useHome(root);

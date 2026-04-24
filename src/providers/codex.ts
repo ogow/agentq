@@ -1,5 +1,5 @@
 import {createWriteStream} from 'node:fs';
-import {writeFile} from 'node:fs/promises';
+import {readFile, writeFile} from 'node:fs/promises';
 import {
   normalizeCodexJsonLine,
   summarizeChangedFiles,
@@ -21,7 +21,11 @@ import type {ProcessRegistry} from '../core/processes';
 import type {ProgressRenderer} from '../core/render';
 import type {AgentProvider} from './provider';
 
+type BinaryResolver = (binary: string) => string | null;
+
 export class CodexProvider implements AgentProvider {
+  constructor(private readonly resolveBinary: BinaryResolver = Bun.which) {}
+
   async run(
     prepared: PreparedRun,
     options: {
@@ -42,8 +46,8 @@ export class CodexProvider implements AgentProvider {
       verbose?: boolean;
     },
   ): Promise<ProviderRunResult> {
-    requireBinary('bun');
-    const codexBin = requireBinary('codex');
+    this.requireBinary('bun');
+    const codexBin = this.requireBinary('codex');
     const env = {
       ...process.env,
       ...prepared.config.env,
@@ -103,16 +107,36 @@ export class CodexProvider implements AgentProvider {
             verbosity: options.verbosity,
             verbose: options.verbose,
           });
+    const completion = createCompletionSignal();
     const stdoutPump = pumpStdout(
       proc.stdout,
       prepared.paths.stdoutPath,
       progress,
-      options.onEvent,
+      event => {
+        completion.observe(event);
+        options.onEvent?.(event);
+      },
     );
     const stderrPump = pumpStderr(proc.stderr, prepared.paths.stderrPath);
 
     try {
-      const exitCode = await proc.exited;
+      const outcome = await Promise.race([
+        proc.exited.then(exitCode => ({exitCode, kind: 'exit' as const})),
+        completion.promise.then(event => ({
+          event,
+          exitCode: 0,
+          kind: 'completed' as const,
+        })),
+      ]);
+      if (outcome.kind === 'completed') {
+        clearTimeout(timer);
+        await writeCompletionOutputFallback(
+          prepared.paths.outputPath,
+          outcome.event,
+        );
+        await stopCompletedProcess(proc);
+      }
+      const exitCode = outcome.exitCode;
       exited = true;
       const [events, stderr] = await Promise.all([stdoutPump, stderrPump]);
       return {
@@ -135,6 +159,83 @@ export class CodexProvider implements AgentProvider {
       progress.stop();
     }
   }
+
+  private requireBinary(binary: string): string {
+    const resolved = this.resolveBinary(binary);
+    if (!resolved) {
+      throw new AgentQError(
+        `Required command not found: ${binary}. Make sure it is installed and available on PATH.`,
+      );
+    }
+
+    return resolved;
+  }
+}
+
+function createCompletionSignal(): {
+  observe: (event: AgentQEvent) => void;
+  promise: Promise<AgentQEvent>;
+} {
+  let completed = false;
+  let resolveCompletion: (event: AgentQEvent) => void = () => undefined;
+  const promise = new Promise<AgentQEvent>(resolve => {
+    resolveCompletion = resolve;
+  });
+
+  return {
+    observe: event => {
+      if (completed || event.kind !== 'run_completed') {
+        return;
+      }
+      completed = true;
+      resolveCompletion(event);
+    },
+    promise,
+  };
+}
+
+async function writeCompletionOutputFallback(
+  outputPath: string,
+  event: AgentQEvent,
+): Promise<void> {
+  const message = event.message;
+  if (!message || message.trim().length === 0) {
+    return;
+  }
+
+  let current = '';
+  try {
+    current = await readFile(outputPath, 'utf8');
+  } catch {
+    current = '';
+  }
+  if (current.trim().length > 0) {
+    return;
+  }
+
+  await writeFile(
+    outputPath,
+    message.endsWith('\n') ? message : `${message}\n`,
+  );
+}
+
+async function stopCompletedProcess(process: Bun.Subprocess): Promise<void> {
+  const exited = await Promise.race([
+    process.exited.then(
+      () => true,
+      () => true,
+    ),
+    delay(250).then(() => false),
+  ]);
+  if (exited) {
+    return;
+  }
+
+  await killProcessTree(process);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function buildCodexArgs(prepared: PreparedRun): string[] {
@@ -177,17 +278,6 @@ function buildCodexArgs(prepared: PreparedRun): string[] {
 
   args.push('-');
   return args;
-}
-
-function requireBinary(binary: string): string {
-  const resolved = Bun.which(binary);
-  if (!resolved) {
-    throw new AgentQError(
-      `Required command not found: ${binary}. Make sure it is installed and available on PATH.`,
-    );
-  }
-
-  return resolved;
 }
 
 async function pumpStdout(

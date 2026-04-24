@@ -1,9 +1,10 @@
 import {describe, expect, test} from 'bun:test';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, readFile, writeFile} from 'node:fs/promises';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {runAgent} from '../src/core/run';
+import {CodexProvider} from '../src/providers/codex';
 import type {AgentProvider} from '../src/providers/provider';
 import type {
   PreparedRun,
@@ -357,11 +358,97 @@ describe('run contract', () => {
       restoreHome();
     }
   });
+
+  test('treats Codex task completion as terminal when the provider process lingers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-provider-'));
+    const binDir = join(root, 'bin');
+    const projectCwd = join(root, 'project');
+    const runDir = join(root, 'run');
+    await mkdir(binDir, {recursive: true});
+    await mkdir(projectCwd, {recursive: true});
+    await mkdir(runDir, {recursive: true});
+    await writeFile(
+      join(binDir, 'codex'),
+      `#!/usr/bin/env bun
+console.log(JSON.stringify({
+  type: 'event_msg',
+  payload: {
+    type: 'task_complete',
+    last_agent_message: 'final answer',
+  },
+}));
+await new Promise(() => undefined);
+`,
+      'utf8',
+    );
+    await chmod(join(binDir, 'codex'), 0o755);
+
+    const codexPath = join(binDir, 'codex');
+    const provider = new CodexProvider(binary =>
+      binary === 'codex' ? codexPath : Bun.which(binary),
+    );
+
+    const startedAt = Date.now();
+    const result = await provider.run(preparedCodexRun(projectCwd, runDir), {
+      agentId: 'linger-agent',
+      progress: false,
+    });
+    const output = await readFile(join(runDir, 'output.md'), 'utf8');
+
+    expect(Date.now() - startedAt).toBeLessThan(1500);
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(result.events.map(event => event.kind)).toContain('run_completed');
+    expect(output.trim()).toBe('final answer');
+  });
 });
 
 function providerResult(result: ProviderRunResult): AgentProvider {
   return {
     run: async () => result,
+  };
+}
+
+function preparedCodexRun(projectCwd: string, runDir: string): PreparedRun {
+  return {
+    agent: {
+      body: '',
+      filePath: join(projectCwd, '.agentq', 'agents', 'linger-agent.md'),
+      frontmatter: {
+        description: 'Test lingering provider completion.',
+        id: 'linger-agent',
+        model: 'gpt-5.4',
+        provider: 'codex',
+        reasoning: 'none',
+        resultMode: 'plain',
+        sandbox: 'workspace-write',
+        timeout: '2s',
+      },
+      id: 'linger-agent',
+      scope: 'project',
+    },
+    config: {
+      agentId: 'linger-agent',
+      env: {},
+      model: 'gpt-5.4',
+      provider: 'codex',
+      reasoning: 'none',
+      resultMode: 'plain',
+      sandbox: 'workspace-write',
+      timeout: '2s',
+      timeoutMs: 2000,
+    },
+    paths: {
+      artifactsDirPath: join(runDir, 'artifacts'),
+      outputPath: join(runDir, 'output.md'),
+      runDir,
+      runJsonPath: join(runDir, 'run.json'),
+      stderrPath: join(runDir, 'stderr.log'),
+      stdoutPath: join(runDir, 'stdout.jsonl'),
+    },
+    projectCwd,
+    prompt: 'finish cleanly',
+    task: 'finish cleanly',
   };
 }
 

@@ -11,10 +11,11 @@ import {
 } from 'node:fs/promises';
 import {platform} from 'node:os';
 import {basename, isAbsolute, join, resolve} from 'node:path';
+import {parseDurationMs} from './durations';
 import {AgentQError, assertAgentQ} from './errors';
 import {agentqHome} from './home';
 import {resolveHarnessRunDir} from './harness-paths';
-import {currentHost, ProcessRegistry} from './processes';
+import {currentHost, killProcessTree, ProcessRegistry} from './processes';
 import {
   createHarnessProgressRenderer,
   type HarnessProgressStep,
@@ -38,6 +39,7 @@ import type {
 
 type HarnessCommand = string | string[];
 type HarnessInputType = 'string' | 'number' | 'boolean';
+const DEFAULT_HARNESS_COMMAND_TIMEOUT = '10m';
 type HarnessRunStatus =
   | 'running'
   | 'success'
@@ -59,6 +61,8 @@ interface HarnessDefinition {
 interface HarnessCheckDefinition {
   command: HarnessCommand;
   id: string;
+  timeout: string;
+  timeoutMs: number;
 }
 
 type HarnessStepDefinition =
@@ -80,6 +84,8 @@ interface HarnessCommandStepDefinition {
   command: HarnessCommand;
   id: string;
   kind: 'command';
+  timeout: string;
+  timeoutMs: number;
 }
 
 interface HarnessLoopStepDefinition {
@@ -95,6 +101,7 @@ interface CommandExecutionResult extends StepResult {
   exitCode: number | null;
   stderr: string;
   stdout: string;
+  timedOut: boolean;
 }
 
 export interface HarnessListEntry {
@@ -156,6 +163,7 @@ export interface HarnessCheckResult {
   status: HarnessStepStatus;
   stderr: string;
   stdout: string;
+  timedOut?: boolean;
 }
 
 interface HarnessRunPaths {
@@ -782,6 +790,8 @@ async function runDefinedStep(options: {
         projectCwd: options.request.projectCwd,
         state: options.state,
         stepId: options.stepId,
+        timeout: options.step.timeout,
+        timeoutMs: options.step.timeoutMs,
       });
 }
 
@@ -929,6 +939,8 @@ async function runCommandStep(options: {
   projectCwd: string;
   state: HarnessState;
   stepId: string;
+  timeout: string;
+  timeoutMs: number;
 }): Promise<CommandExecutionResult> {
   const startedAt = new Date();
   const command = commandArgv(options.command);
@@ -946,33 +958,23 @@ async function runCommandStep(options: {
     summary: `Running check ${options.id}.`,
   });
 
-  const proc = Bun.spawn(command, {
-    cwd: options.projectCwd,
-    stderr: 'pipe',
-    stdout: 'pipe',
+  const {exitCode, stdout, stderr, timedOut} = await executeHarnessCommand({
+    command,
+    processRegistry: options.processRegistry,
+    projectCwd: options.projectCwd,
+    timeoutMs: options.timeoutMs,
   });
-  const untrack = options.processRegistry.track(proc);
-  let exitCode: number | null;
-  let stdout: string;
-  let stderr: string;
-  try {
-    [exitCode, stdout, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-  } finally {
-    untrack();
-  }
 
   const interrupted = options.interruptState.interrupted;
   const status: HarnessStepStatus =
-    !interrupted && exitCode === 0 ? 'success' : 'failed';
+    !interrupted && !timedOut && exitCode === 0 ? 'success' : 'failed';
   const summary = interrupted
     ? `Check ${options.id} was interrupted.`
-    : status === 'success'
-      ? `Check ${options.id} passed.`
-      : `Check ${options.id} failed.`;
+    : timedOut
+      ? `Check ${options.id} timed out after ${options.timeout}.`
+      : status === 'success'
+        ? `Check ${options.id} passed.`
+        : `Check ${options.id} failed.`;
   const result: CommandExecutionResult = {
     artifacts: [],
     command: command.join(' '),
@@ -982,18 +984,19 @@ async function runCommandStep(options: {
       status === 'success'
         ? null
         : {
-            problem: `Check ${options.id} failed.`,
+            problem: summary,
             evidence: [stderr, stdout].filter(value => value.trim().length > 0),
           },
     finishedAt: new Date().toISOString(),
     kind: 'command',
-    result: {stderr, stdout},
+    result: {stderr, stdout, timedOut},
     startedAt: startedAt.toISOString(),
     status,
     stderr,
     stdout,
     stepId: options.stepId,
     summary,
+    timedOut,
   };
   options.progress.finishStep(
     {detail: options.stepId, label: options.id},
@@ -1016,6 +1019,43 @@ async function runCommandStep(options: {
     summary,
   });
   return result;
+}
+
+async function executeHarnessCommand(options: {
+  command: string[];
+  processRegistry: ProcessRegistry;
+  projectCwd: string;
+  timeoutMs: number;
+}): Promise<{
+  exitCode: number | null;
+  stderr: string;
+  stdout: string;
+  timedOut: boolean;
+}> {
+  const proc = Bun.spawn(options.command, {
+    cwd: options.projectCwd,
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  const untrack = options.processRegistry.track(proc);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void killProcessTree(proc);
+  }, options.timeoutMs);
+
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    return {exitCode, stderr, stdout, timedOut};
+  } finally {
+    clearTimeout(timer);
+    untrack();
+  }
 }
 
 async function finishHarnessRun(options: {
@@ -1406,7 +1446,9 @@ async function runHarnessAttempt(options: {
       }
       if (result.status !== 'success') {
         status = result.status;
-        summary = `Check ${check.id} failed.`;
+        summary = result.timedOut
+          ? `Check ${check.id} timed out after ${check.timeout}.`
+          : `Check ${check.id} failed.`;
         feedback = {
           problem: summary,
           evidence: [result.stderr, result.stdout].filter(
@@ -1463,29 +1505,24 @@ async function runCheck(options: {
     summary: `Running check ${options.check.id}.`,
   });
 
-  const proc = Bun.spawn(command, {
-    cwd: options.projectCwd,
-    stderr: 'pipe',
-    stdout: 'pipe',
+  const {exitCode, stdout, stderr, timedOut} = await executeHarnessCommand({
+    command,
+    processRegistry: options.processRegistry,
+    projectCwd: options.projectCwd,
+    timeoutMs: options.check.timeoutMs,
   });
-  const untrack = options.processRegistry.track(proc);
-  let exitCode: number | null;
-  let stdout: string;
-  let stderr: string;
-  try {
-    [exitCode, stdout, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-  } finally {
-    untrack();
-  }
 
   const finishedAt = new Date();
   const interrupted = options.interruptState.interrupted;
   const status: HarnessStepStatus =
-    !interrupted && exitCode === 0 ? 'success' : 'failed';
+    !interrupted && !timedOut && exitCode === 0 ? 'success' : 'failed';
+  const summary = interrupted
+    ? `Check ${options.check.id} was interrupted.`
+    : timedOut
+      ? `Check ${options.check.id} timed out after ${options.check.timeout}.`
+      : status === 'success'
+        ? `Check ${options.check.id} passed.`
+        : `Check ${options.check.id} failed.`;
   const result: HarnessCheckResult = {
     command: command.join(' '),
     exitCode,
@@ -1495,6 +1532,7 @@ async function runCheck(options: {
     status,
     stderr,
     stdout,
+    timedOut,
   };
   options.progress.finishStep(
     {detail: stepId, label: options.check.id},
@@ -1505,11 +1543,7 @@ async function runCheck(options: {
       stderrTail: tail(result.stderr),
       status,
       stdoutTail: tail(result.stdout),
-      summary: interrupted
-        ? `Check ${options.check.id} was interrupted.`
-        : status === 'success'
-          ? `Check ${options.check.id} passed.`
-          : `Check ${options.check.id} failed.`,
+      summary,
     },
   );
   await appendHarnessLogEvent(options.paths, options.state, {
@@ -1518,11 +1552,7 @@ async function runCheck(options: {
     kind: 'check_finished',
     status,
     stepId,
-    summary: interrupted
-      ? `Check ${options.check.id} was interrupted.`
-      : status === 'success'
-        ? `Check ${options.check.id} passed.`
-        : `Check ${options.check.id} failed.`,
+    summary,
   });
   return result;
 }
@@ -1610,7 +1640,11 @@ function parseChecks(value: unknown): HarnessCheckDefinition[] {
         `Harness check "${id}" command must be a string or string array.`,
       );
     }
-    return {command, id};
+    return {
+      command,
+      id,
+      ...parseHarnessCommandTimeout(item.timeout, `Harness check "${id}"`),
+    };
   });
 }
 
@@ -1689,7 +1723,12 @@ function parseStep(
         `Harness step "${id}" command must be a string or string array.`,
       );
     }
-    return {command: value.command, id, kind: 'command'};
+    return {
+      command: value.command,
+      id,
+      kind: 'command',
+      ...parseHarnessCommandTimeout(value.timeout, `Harness step "${id}"`),
+    };
   }
 
   throw new AgentQError(
@@ -1710,6 +1749,26 @@ function parseRetries(value: unknown): number {
     throw new AgentQError('Harness retries must be an integer from 0 to 10.');
   }
   return value;
+}
+
+function parseHarnessCommandTimeout(
+  value: unknown,
+  label: string,
+): {timeout: string; timeoutMs: number} {
+  if (value === undefined) {
+    return {
+      timeout: DEFAULT_HARNESS_COMMAND_TIMEOUT,
+      timeoutMs: parseDurationMs(DEFAULT_HARNESS_COMMAND_TIMEOUT),
+    };
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new AgentQError(`${label} timeout must be a duration string.`);
+  }
+
+  return {
+    timeout: value,
+    timeoutMs: parseDurationMs(value),
+  };
 }
 
 function parseInputs(value: unknown): Record<string, HarnessInputType> {

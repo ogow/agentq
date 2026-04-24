@@ -78,6 +78,7 @@ inputs:
 checks:
   - id: check
     command: ["bun", "run", "check"]
+    timeout: 10m
 ```
 
 Structured harnesses use `steps`:
@@ -98,11 +99,14 @@ steps:
           agent: harness-builder
         - id: check
           command: ["bun", "run", "check"]
+          timeout: 10m
         - id: review
           agent: harness-reviewer
 ```
 
 `over` resolves an array from a previous step result with `{{step.path}}` syntax. For each item, the harness runs the loop body until it succeeds, blocks, reports a non-retryable plan failure, or exhausts retries. `failureKind: "plan"` stops the loop because retrying the same implementation task unchanged is unlikely to help.
+
+Harness command and check steps have a default `10m` timeout. Harness authors can set `timeout` on each command/check step when a slower command is expected.
 
 Harness runs accept `--input-text` for literal input and `--input-file` for files or stdin. JSON objects become structured inputs; other content becomes `inputs.task`.
 
