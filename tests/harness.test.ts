@@ -95,9 +95,23 @@ inputs:
 
       expect(result.status).toBe('success');
       expect(result.completedItems).toBe(1);
-      expect(formatHarnessSummary(result)).toContain('work: success');
+      expect(formatHarnessSummary(result)).toMatch(/^[^:\n]+: success/m);
       expect(formatHarnessSummary(result)).toContain('tasks: 1 succeeded');
+      expect(formatHarnessSummary(result)).toContain('tries: 1 total');
       expect(formatHarnessSummary(result)).toContain('duration:');
+      expect(
+        formatHarnessSummary({...result, tokenUsage: undefined}),
+      ).not.toContain('tokens:');
+      expect(
+        formatHarnessSummary({
+          ...result,
+          tokenUsage: {
+            inputTokens: 100,
+            outputTokens: 20,
+            totalTokens: 120,
+          },
+        }),
+      ).toContain('tokens: input 100 · output 20 · total 120');
       expect(stdout).toBe('');
       expect(stderr.trim().split('\n')).toEqual([
         '✓ task 1/1 success retry 1/1  work',
@@ -500,7 +514,10 @@ checks:
       expect(result.feedback?.problem).toBe('Check unit failed.');
       expect(inspected.status).toBe('failed');
       expect(formatHarnessSummary(result)).toContain(
-        'failed: Check unit failed.',
+        'reason: Check unit failed.',
+      );
+      expect(formatHarnessSummary(result)).toContain(
+        'failed_step: attempt-1.check.unit',
       );
       const checkEvents = await readHarnessLogEvents({
         run: result.runDir,
@@ -756,7 +773,7 @@ steps:
 
       expect(inspected.status).toBe('running');
       expect(inspected.failedStep).toBeUndefined();
-      expect(formatHarnessSummary(inspected)).toContain('work: running');
+      expect(formatHarnessSummary(inspected)).toContain(': running');
     } finally {
       restoreHome();
     }

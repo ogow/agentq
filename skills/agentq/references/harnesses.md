@@ -122,6 +122,22 @@ Failures are interpreted by status and optional `failureKind`:
 
 Use `failureKind: "plan"` only when the assigned task or plan is wrong and another implementation attempt would waste work.
 
+Harness agent steps can declare first-pass contracts with `requires`:
+
+```yaml
+steps:
+  - id: build
+    agent: harness-builder
+    requires:
+      result:
+        changedFiles: array
+        verification: array
+      artifacts:
+        - path: summary.md
+```
+
+Supported result kinds are `string`, `number`, `boolean`, `array`, and `object`. Artifact requirements resolve against the nested agent run's `artifacts/` directory, and AgentQ does not copy them into the harness run directory.
+
 ## Splitter Contract
 
 Splitter/planner agents that feed a loop return the normal `AgentOutput` JSON contract. Put generated tasks under `result.tasks`:

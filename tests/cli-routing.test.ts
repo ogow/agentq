@@ -184,7 +184,7 @@ steps:
         .split('\n')
         .filter(line => line.length > 0);
 
-      expect(stdout).toContain('work: success');
+      expect(stdout).toMatch(/^work-[^:\n]+: success/m);
       expect(lines[0]).toMatch(/^[^\s]+$/);
       expect(stderr).toContain('▸ task 1/1  retry 1/1  work');
       expect(stderr).toContain('▸ build');
@@ -226,7 +226,7 @@ steps:
       const stderr = stderrCapture.chunks.join('');
 
       expect(process.exitCode ?? 0).toBe(1);
-      expect(stdout).toContain('work: failed');
+      expect(stdout).toMatch(/^work-[^:\n]+: failed/m);
       expect(stderr).toContain('▸ task 1/1  retry 1/1  work');
       expect(stderr).toContain(
         "command: bun -e console.log('noise'); console.error('boom'); process.exit(1)",

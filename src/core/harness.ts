@@ -18,10 +18,16 @@ import {resolveHarnessRunDir} from './harness-paths';
 import {currentHost, killProcessTree, ProcessRegistry} from './processes';
 import {
   createHarnessProgressRenderer,
+  formatKeyValueReport,
+  formatTokenUsageSummary,
   type HarnessProgressStep,
   type HarnessProgressResult,
   type HarnessProgressRenderer,
 } from './render';
+import {
+  readHarnessTokenUsageSummaryFromSources,
+  type HarnessTokenUsageSummary,
+} from './harness-token-usage';
 import {runAgent} from './run';
 import type {AgentProvider} from '../providers/provider';
 import type {
@@ -138,6 +144,7 @@ export interface HarnessRunResult {
   status: HarnessRunStatus;
   steps: StepResult[];
   summary: string;
+  tokenUsage?: HarnessTokenUsageSummary;
 }
 
 export interface HarnessAttemptRecord {
@@ -313,6 +320,11 @@ export async function inspectHarnessRun(
 ): Promise<HarnessRunResult> {
   const runDir = resolveHarnessRunDir(runIdOrPath);
   const state = await readHarnessState(harnessRunPathsFromDir(runDir));
+  const steps = Object.values(state.stepResults ?? {});
+  const tokenUsage = await summarizeHarnessTokenUsageFromRunRecords(
+    steps,
+    state.attempts,
+  );
 
   return {
     attempts: state.attempts,
@@ -329,30 +341,74 @@ export async function inspectHarnessRun(
     runDir: state.runDir,
     startedAt: state.startedAt,
     status: state.status,
-    steps: [],
+    steps,
     summary: state.summary ?? 'Harness run has not completed.',
+    tokenUsage,
   };
 }
 
 export function formatHarnessSummary(result: HarnessRunResult): string {
-  const lines = [`${result.harnessName}: ${result.status}`];
+  return formatHarnessSummaryWithOptions(result, {
+    tty: Boolean(process.stdout.isTTY),
+  });
+}
+
+function formatHarnessSummaryWithOptions(
+  result: HarnessRunResult,
+  options: {tty?: boolean} = {},
+): string {
+  const tty = Boolean(options.tty);
+  const runId = basename(result.runDir);
+  const headline = tty
+    ? `${runId}  ${result.status}`
+    : `${runId}: ${result.status}`;
+
   if (result.status === 'running') {
-    lines.push('running');
-    lines.push(`duration: ${formatDuration(result.durationMs)}`);
-    lines.push(`run: ${result.runDir}`);
-    return lines.join('\n');
+    const rows = formatKeyValueReport(
+      [
+        {label: 'duration', value: formatDuration(result.durationMs)},
+        {label: 'run', value: result.runDir},
+      ],
+      {tty},
+    );
+    return [headline, rows].filter(Boolean).join('\n');
   }
-  if (result.status === 'success') {
-    lines.push(`tasks: ${result.completedItems} succeeded`);
-  } else {
-    lines.push(result.summary ? `failed: ${result.summary}` : 'failed');
-  }
-  lines.push(`duration: ${formatDuration(result.durationMs)}`);
-  if (result.feedback) {
-    lines.push(`feedback: ${formatFeedback(result.feedback)}`);
-  }
-  lines.push(`run: ${result.runDir}`);
-  return lines.join('\n');
+
+  const rows = formatKeyValueReport(
+    [
+      {
+        label: 'tasks',
+        value:
+          result.status === 'success'
+            ? `${result.completedItems} succeeded`
+            : `${result.completedItems} succeeded, 1 failed`,
+      },
+      {label: 'tries', value: `${result.iterations} total`},
+      {label: 'duration', value: formatDuration(result.durationMs)},
+      result.tokenUsage
+        ? {
+            label: 'tokens',
+            value: formatTokenUsageSummary(result.tokenUsage, {
+              compact: true,
+            })?.slice('tokens: '.length),
+          }
+        : undefined,
+      result.status !== 'success' && result.failedStep
+        ? {label: 'failed_step', value: result.failedStep}
+        : undefined,
+      result.status !== 'success' &&
+      (result.summary || result.feedback?.problem)
+        ? {
+            label: 'reason',
+            value: result.summary || result.feedback?.problem || '',
+          }
+        : undefined,
+      {label: 'run', value: result.runDir},
+    ].filter(Boolean) as Array<{label: string; value?: string}>,
+    {tty},
+  );
+
+  return [headline, rows].filter(Boolean).join('\n');
 }
 
 export async function readHarnessLogEvents(
@@ -1069,6 +1125,11 @@ async function finishHarnessRun(options: {
   summary: string;
 }): Promise<HarnessRunResult> {
   const finishedAt = new Date();
+  const steps = Object.values(options.state.stepResults ?? {});
+  const tokenUsage = await summarizeHarnessTokenUsageFromRunRecords(
+    steps,
+    options.state.attempts,
+  );
   const result: HarnessRunResult = {
     attempts: options.state.attempts,
     durationMs: finishedAt.getTime() - options.startedAt.getTime(),
@@ -1084,8 +1145,9 @@ async function finishHarnessRun(options: {
     runDir: options.paths.runDir,
     startedAt: options.startedAt.toISOString(),
     status: options.status,
-    steps: Object.values(options.state.stepResults ?? {}),
+    steps,
     summary: options.summary,
+    tokenUsage,
   };
 
   options.state.finishedAt = finishedAt.toISOString();
@@ -1105,6 +1167,33 @@ async function finishHarnessRun(options: {
   });
 
   return result;
+}
+
+async function summarizeHarnessTokenUsageFromRunRecords(
+  steps: StepResult[],
+  attempts: HarnessAttemptRecord[],
+): Promise<HarnessTokenUsageSummary | undefined> {
+  const sources = [
+    ...steps
+      .filter(step => step.runDir)
+      .map(step => ({
+        agentRunDir: step.runDir as string,
+        stepId: step.stepId,
+      })),
+    ...attempts
+      .filter(attempt => attempt.agentRunDir)
+      .map(attempt => ({
+        agentRunDir: attempt.agentRunDir as string,
+        stepId: attempt.failedStep?.detail ?? `attempt-${attempt.attempt}`,
+      })),
+  ];
+
+  if (sources.length === 0) {
+    return undefined;
+  }
+
+  const {tokenUsage} = await readHarnessTokenUsageSummaryFromSources(sources);
+  return tokenUsage;
 }
 
 async function runHarnessAttempts(options: {
@@ -2212,10 +2301,6 @@ function timestampLabel(timestamp: string): string {
     return '--:--:--';
   }
   return date.toISOString().slice(11, 19);
-}
-
-function formatFeedback(feedback: AgentFeedback): string {
-  return [feedback.problem, feedback.fix].filter(Boolean).join(' ');
 }
 
 function requireString(value: unknown, message: string): string {

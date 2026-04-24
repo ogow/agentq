@@ -75,7 +75,12 @@ async function printRunSummary(
   const output = await readOutput(result.paths.outputPath);
   const metadata = await readRunMetadata(result.paths.runJsonPath);
 
-  process.stdout.write(`${formatRunSummary(metadata, output, options)}\n`);
+  process.stdout.write(
+    `${formatRunSummary(metadata, output, {
+      ...options,
+      tty: Boolean(process.stdout.isTTY),
+    })}\n`,
+  );
 }
 
 async function readOutput(outputPath: string): Promise<string> {

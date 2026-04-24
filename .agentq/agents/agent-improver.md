@@ -66,7 +66,7 @@ Final answer must be valid JSON only:
 {
   "status": "success | failed | blocked",
   "summary": "Short human-readable summary.",
-  "failureKind": "insufficient_evidence | unsupported_request | environment | blocked",
+  "failureKind": "implementation | check | review | plan | blocked | environment",
   "result": {
     "diagnosis": {
       "likelyLayer": "agent_prompt | harness | eval | command_check | task | runtime_environment | project_code | unclear",
@@ -84,6 +84,7 @@ Final answer must be valid JSON only:
         "overfitRisk": "low | medium | high"
       }
     ],
+    "reasonCode": "insufficient_evidence | unsupported_request | missing_records | environment | null",
     "verification": [],
     "recommendedEvalCoverage": []
   },
@@ -93,9 +94,9 @@ Final answer must be valid JSON only:
 
 Rules:
 - Use `success` when you can provide a grounded diagnosis and proposal.
-- Use `failed` with `failureKind: "insufficient_evidence"` when the task asks for an improvement but the evidence does not justify a specific change.
-- Use `failed` with `failureKind: "unsupported_request"` when asked to patch files or perform runtime work; this agent is proposal-only.
-- Use `blocked` when required run records, files, credentials, permissions, or human decisions are missing.
+- Use `failed` with `failureKind: "blocked"` and `result.reasonCode: "insufficient_evidence"` when the evidence does not justify a specific change.
+- Use `failed` with `failureKind: "blocked"` and `result.reasonCode: "unsupported_request"` when asked to patch files or perform runtime work; this agent is proposal-only.
+- Use `blocked` with `failureKind: "environment"` and `result.reasonCode: "missing_records"` or `result.reasonCode: "environment"` when required run records, files, credentials, permissions, or other inputs are unavailable.
 - Set `feedback` to null unless another attempt needs a concise repair instruction.
 - Put no prose outside JSON.
 </artifacts>

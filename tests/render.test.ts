@@ -55,11 +55,31 @@ const METADATA: RunMetadata = {
   toolUsage: [{calls: 2, failures: 0, name: 'exec_command', successes: 2}],
 };
 
+function visibleLength(value: string): number {
+  let length = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === '\r' || char === '\n') {
+      continue;
+    }
+    if (char === '\u001b' && value[index + 1] === '[') {
+      index += 1;
+      while (index < value.length && value[index] !== 'm') {
+        index += 1;
+      }
+      continue;
+    }
+    length += 1;
+  }
+  return length;
+}
+
 describe('rendering', () => {
   test('formats a compact run summary by default', () => {
     const summary = formatRunSummary(METADATA, 'Looks good.', {color: false});
 
-    expect(summary).toContain('AgentQ reviewer succeeded in 3.1s');
+    expect(summary).toContain('reviewer: succeeded');
+    expect(summary).toContain('duration: 3.1s');
     expect(summary).toContain('run: /home/me/.agentq/runs/reviewer-abc');
     expect(summary).toContain('tools: 2 calls, 0 failures');
     expect(summary).toContain('edits: 1 file changed');
@@ -78,16 +98,20 @@ describe('rendering', () => {
     const summary = formatRunSummary(METADATA, 'Looks good.', {
       color: false,
       details: true,
+      tty: true,
     });
 
     expect(summary).toContain('AgentQ Run Complete');
-    expect(summary).toContain('reviewer');
-    expect(summary).toContain('2 calls, 0 failures');
-    expect(summary).toContain('plain');
-    expect(summary).toContain(
-      'tokens    input 102,312 · output 31,523 · cached 12,000 · reasoning 4,210 · total 133,835',
+    expect(summary).toMatch(/agent\s+reviewer/);
+    expect(summary).toMatch(/result\s+succeeded/);
+    expect(summary).toMatch(/tools\s+2 calls, 0 failures/);
+    expect(summary).toMatch(/output\s+plain/);
+    expect(summary).toMatch(
+      /tokens\s+input 102,312 · output 31,523 · cached 12,000 · reasoning 4,210 · total 133,835/,
     );
-    expect(summary).toContain('src/core/render.ts');
+    expect(summary).toMatch(/run\s+\/home\/me\/\.agentq\/runs\/reviewer-abc/);
+    expect(summary).not.toContain('+--');
+    expect(summary).not.toContain('| agent');
     expect(summary).toContain('Final output');
     expect(summary).toContain('Looks good.');
   });
@@ -361,18 +385,14 @@ describe('rendering', () => {
     const output = chunks.join('');
     expect(output.split('\r\x1b[2K').length - 1).toBeGreaterThan(3);
     expect(output).toContain(
-      'devloop-e50232 task 1/4 retry 1/4  harness-builder  reading harness summary code and checking the mutation path',
+      'harness-builder  reading harness summary code and checking the mutation path',
     );
     expect(output).not.toContain(
       'reading harness summary code\nand checking the mutation path',
     );
     expect(output).not.toContain('bun test tests/harness.test.ts');
-    expect(output).toContain(
-      'devloop-e50232 task 1/4 retry 1/4  harness-builder  retrying',
-    );
-    expect(output).toContain(
-      'devloop-e50232 task 1/4 retry 2/4  harness-builder  applying feedback',
-    );
+    expect(output).toContain('harness-builder  retrying');
+    expect(output).toContain('harness-builder  applying feedback');
     const completionLine =
       '✓ task 1/4 success retry 2/4  Fix item count vs retry count';
     expect(output.split(completionLine).length - 1).toBe(1);
@@ -380,6 +400,118 @@ describe('rendering', () => {
     expect(output).toContain(
       '\r\x1b[2K✓ task 1/4 success retry 2/4  Fix item count vs retry count\n',
     );
+  });
+
+  test('truncates narrow default tty live rows before the terminal width', () => {
+    const chunks: string[] = [];
+    const columns = 48;
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      runId: 'devloop-90ec65',
+      stream: {
+        columns,
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-builder',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message:
+        'I need one more piece before editing: the next path is long enough to wrap if the renderer does not truncate it carefully.',
+      provider: 'codex',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.stop();
+
+    const liveRows = chunks
+      .filter(chunk => chunk.startsWith('\r\x1b[2K'))
+      .map(chunk => chunk.replace('\r\x1b[2K', ''));
+    expect(liveRows.length).toBeGreaterThan(0);
+    for (const row of liveRows) {
+      expect(visibleLength(row)).toBeLessThanOrEqual(columns);
+    }
+    expect(chunks.join('')).not.toContain(
+      'the renderer does not truncate it carefully',
+    );
+  });
+
+  test('truncates narrow colored default tty live rows without splitting ansi styling', () => {
+    const chunks: string[] = [];
+    const columns = 24;
+    const renderer = createHarnessProgressRenderer({
+      color: true,
+      runId: 'devloop-90ec65',
+      stream: {
+        columns,
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.worker',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Done.',
+      total: 1,
+    };
+    const step = {
+      detail: 'task-001.attempt-001.worker',
+      label: 'harness-builder',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.onEvent({
+      kind: 'assistant_message',
+      message:
+        'I need one more piece before editing: the next path is long enough to wrap if the renderer does not truncate it carefully.',
+      provider: 'codex',
+    });
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Done.',
+    });
+    renderer.stop();
+
+    const liveRows = chunks
+      .filter(chunk => chunk.startsWith('\r\x1b[2K'))
+      .map(chunk => chunk.replace('\r\x1b[2K', ''));
+    expect(liveRows.length).toBeGreaterThan(0);
+    for (const row of liveRows) {
+      expect(visibleLength(row)).toBeLessThanOrEqual(columns);
+      if (row.includes('\u001b[1m')) {
+        expect(row).toContain('\u001b[22m');
+      }
+    }
   });
 
   test('keeps raw command text out of the default live row', () => {
@@ -433,13 +565,55 @@ describe('rendering', () => {
     renderer.stop();
 
     const output = chunks.join('');
-    expect(output).toContain(
-      'devloop-e50232 task 1/1 retry 1/1  check  working',
-    );
+    expect(output).toContain('check  working');
     expect(output).toContain('retrying');
     expect(output).not.toContain('bun run check');
     expect(output.split('Running checks.').length - 1).toBe(1);
     expect(output).toContain('✓ task 1/1 success retry 1/1  Running checks.');
+  });
+
+  test('collapses tty verbose command steps to one durable final row', () => {
+    const chunks: string[] = [];
+    const renderer = createHarnessProgressRenderer({
+      color: false,
+      stream: {
+        isTTY: true,
+        write: chunk => chunks.push(String(chunk)),
+      },
+      verbosity: 1,
+    });
+
+    const task = {
+      attempt: 1,
+      detail: 'task-001.attempt-001.check',
+      index: 1,
+      label: 'item',
+      maxAttempts: 1,
+      summary: 'Checks passed.',
+      total: 1,
+    };
+    const step = {
+      activity: 'bun run check',
+      detail: 'task-001.attempt-001.check',
+      label: 'typecheck',
+    };
+    renderer.startTask(task);
+    renderer.startStep(step);
+    renderer.finishStep(step, {
+      status: 'success',
+      summary: 'Check typecheck passed.',
+    });
+    renderer.finishTask(task, {
+      status: 'success',
+      summary: 'Checks passed.',
+    });
+    renderer.stop();
+
+    const output = chunks.join('');
+    expect(output).toContain('\r\x1b[2K▸ typecheck  command');
+    expect(output).toContain('\r\x1b[2K✓ typecheck  command  passed\n');
+    expect(output).not.toContain('\n▸ typecheck  command');
+    expect(output.match(/✓ typecheck {2}command {2}passed/g)).toHaveLength(1);
   });
 
   test('styles the default live activity as dim when color is enabled', () => {
@@ -1254,12 +1428,8 @@ describe('rendering', () => {
     renderer.stop();
 
     const output = chunks.join('');
-    expect(output).toContain(
-      'devloop-a0d2b5 task 1/1 retry 1/8  harness-builder  checking the renderer',
-    );
-    expect(output).toContain(
-      'devloop-a0d2b5 task 1/1 retry 8/8  harness-builder  applying reviewer feedback',
-    );
+    expect(output).toContain('harness-builder  checking the renderer');
+    expect(output).toMatch(/harness-builder {2}applying reviewer feedback/);
     expect(output).not.toContain('attempt 1/9');
   });
 

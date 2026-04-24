@@ -14,6 +14,7 @@ import type {RunInspection} from './history';
 type ChalkStyle = typeof chalkStderr;
 
 interface RenderStream {
+  columns?: number;
   isTTY?: boolean;
   write: (chunk: string) => unknown;
 }
@@ -63,6 +64,7 @@ export interface HarnessProgressRenderer {
 interface RenderOptions {
   color?: boolean;
   details?: boolean;
+  tty?: boolean;
 }
 
 interface ProgressOptions extends RenderOptions {
@@ -385,6 +387,18 @@ export function createHarnessProgressRenderer({
     };
   }
 
+  if (mode.verbosity === 1 && outputStream.isTTY) {
+    return createHarnessVerboseTtyRenderer({
+      color,
+      harnessPath,
+      harnessTitle,
+      mode,
+      outputStream,
+      runId,
+      style,
+    });
+  }
+
   if (mode.verbosity >= 1) {
     let currentTokenSummary: string | undefined;
     let currentTask: HarnessTaskContext | undefined;
@@ -429,6 +443,7 @@ export function createHarnessProgressRenderer({
         outputStream.write(
           `${formatHarnessStepLine(step, result, style, {
             compactStep: mode.verbosity === 1,
+            commandStep: isCommandStep(step),
             tokenSummary,
           })}\n`,
         );
@@ -476,6 +491,7 @@ export function createHarnessProgressRenderer({
         outputStream.write(
           `${formatHarnessStepStartLine(step, style, {
             compactStep: mode.verbosity === 1,
+            commandStep: isCommandStep(step),
           })}\n`,
         );
       },
@@ -572,6 +588,7 @@ export function createHarnessProgressRenderer({
       }),
       frames[index],
       style,
+      {columns: outputStream.columns},
     );
     outputStream.write(`\r\x1b[2K${line}`);
     lastPlainLength = plainLength(line);
@@ -682,6 +699,175 @@ export function createHarnessProgressRenderer({
       if (interval) {
         clearInterval(interval);
       }
+      clearLine();
+    },
+  };
+}
+
+function createHarnessVerboseTtyRenderer({
+  color,
+  harnessPath,
+  harnessTitle,
+  mode,
+  outputStream,
+  runId,
+  style,
+}: {
+  color: boolean | undefined;
+  harnessPath?: string;
+  harnessTitle: string;
+  mode: {format: OutputFormat; verbosity: Verbosity};
+  outputStream: RenderStream;
+  runId?: string;
+  style: ChalkStyle;
+}): HarnessProgressRenderer {
+  let currentTokenSummary: string | undefined;
+  let currentTask: HarnessTaskContext | undefined;
+  let currentStep: HarnessProgressStep | undefined;
+  let currentLiveStep: HarnessProgressStep | undefined;
+  let printedRunHeader = false;
+  let lastPlainLength = 0;
+
+  const renderRunHeader = () => {
+    if (printedRunHeader || !runId) {
+      return;
+    }
+    printedRunHeader = true;
+    outputStream.write(`${style.bold(runId)}\n`);
+  };
+
+  const clearLine = () => {
+    if (lastPlainLength > 0) {
+      outputStream.write('\r\x1b[2K');
+      lastPlainLength = 0;
+    }
+  };
+
+  const renderLiveStep = () => {
+    if (!currentTask || !currentLiveStep) {
+      return;
+    }
+
+    const line = formatHarnessStepStartLine(currentLiveStep, style, {
+      compactStep: true,
+      commandStep: true,
+      live: true,
+    });
+    outputStream.write(`\r\x1b[2K${line}`);
+    lastPlainLength = plainLength(line);
+  };
+
+  return {
+    finishTask: (task, result) => {
+      const finishedStep = result.step ?? currentStep;
+      clearLine();
+      currentTask = undefined;
+      currentStep = undefined;
+      currentLiveStep = undefined;
+      currentTokenSummary = undefined;
+      outputStream.write(
+        `${formatHarnessCompletionLine(task, result, style)}\n`,
+      );
+      if (result.status !== 'success') {
+        outputStream.write(
+          `${formatHarnessFailureBlock(task, result, style, {
+            harnessPath,
+            harnessTitle,
+            step: finishedStep,
+            verbosity: mode.verbosity,
+          })}\n`,
+        );
+      }
+    },
+    finishStep: (step, result) => {
+      const tokenSummary = currentTokenSummary;
+      const commandStep = isCommandStep(step);
+      clearLine();
+      if (result.status !== 'success' && !currentTask) {
+        outputStream.write(
+          `${formatHarnessFailureBlock(undefined, result, style, {
+            harnessPath,
+            harnessTitle,
+            step,
+            verbosity: mode.verbosity,
+          })}\n`,
+        );
+        return;
+      }
+      if (result.status !== 'success' && result.durable === false) {
+        currentLiveStep = step;
+        renderLiveStep();
+        return;
+      }
+      currentStep = undefined;
+      currentLiveStep = undefined;
+      currentTokenSummary = undefined;
+      outputStream.write(
+        `${formatHarnessStepLine(step, result, style, {
+          compactStep: true,
+          commandStep,
+          tokenSummary,
+        })}\n`,
+      );
+      if (
+        result.status !== 'success' &&
+        (mode.verbosity >= 2 || !currentTask)
+      ) {
+        outputStream.write(
+          `${formatHarnessFailureBlock(undefined, result, style, {
+            harnessPath,
+            harnessTitle,
+            step,
+            verbosity: mode.verbosity,
+          })}\n`,
+        );
+      }
+    },
+    onEvent: event => {
+      const line = formatHarnessVerboseEvent(event, {
+        color,
+        step: currentStep,
+        verbosity: mode.verbosity,
+      });
+      if (line) {
+        clearLine();
+        outputStream.write(`${line}\n`);
+        if (currentLiveStep) {
+          renderLiveStep();
+        }
+        return;
+      }
+      if (mode.verbosity >= 1 && event.kind === 'token_usage') {
+        currentTokenSummary = formatTokenUsageSummary(event.tokenUsage, {
+          compact: true,
+        });
+      }
+    },
+    startTask: task => {
+      renderRunHeader();
+      currentTask = task;
+      currentStep = undefined;
+      currentLiveStep = undefined;
+      currentTokenSummary = undefined;
+      outputStream.write(`${formatHarnessStartLine(task, style)}\n`);
+    },
+    startStep: step => {
+      renderRunHeader();
+      currentStep = step;
+      currentTokenSummary = undefined;
+      if (isCommandStep(step)) {
+        currentLiveStep = step;
+        renderLiveStep();
+        return;
+      }
+      outputStream.write(
+        `${formatHarnessStepStartLine(step, style, {
+          compactStep: true,
+          commandStep: false,
+        })}\n`,
+      );
+    },
+    stop: () => {
       clearLine();
     },
   };
@@ -1016,10 +1202,18 @@ function formatHarnessFailureBlock(
 function formatHarnessStepStartLine(
   step: HarnessProgressStep,
   style: ChalkStyle,
-  options: {compactStep?: boolean} = {},
+  options: {commandStep?: boolean; compactStep?: boolean; live?: boolean} = {},
 ): string {
-  const primary = options.compactStep ? stepName(step) : step.label;
-  const secondary = options.compactStep ? step.label : step.detail;
+  const primary = options.commandStep
+    ? step.label
+    : options.compactStep
+      ? stepName(step)
+      : step.label;
+  const secondary = options.commandStep
+    ? 'command'
+    : options.compactStep
+      ? step.label
+      : step.detail;
   const parts = [
     style.white(primary),
     secondary ? style.dim(secondary) : '',
@@ -1033,17 +1227,30 @@ function formatHarnessStepLine(
   step: HarnessProgressStep,
   result: HarnessProgressResult,
   style: ChalkStyle,
-  options: {compactStep?: boolean; tokenSummary?: string} = {},
+  options: {
+    commandStep?: boolean;
+    compactStep?: boolean;
+    tokenSummary?: string;
+  } = {},
 ): string {
-  const primary = options.compactStep ? stepName(step) : step.label;
-  const secondary = options.compactStep ? step.label : step.detail;
-  const summary =
-    (result.status === 'success'
-      ? formatHarnessOutputSummary(result.result)
-      : undefined) ??
-    result.summary ??
-    step.detail ??
-    step.label;
+  const primary = options.commandStep
+    ? step.label
+    : options.compactStep
+      ? stepName(step)
+      : step.label;
+  const secondary = options.commandStep
+    ? 'command'
+    : options.compactStep
+      ? step.label
+      : step.detail;
+  const summary = options.commandStep
+    ? commandStepSummary(result.status)
+    : ((result.status === 'success'
+        ? formatHarnessOutputSummary(result.result)
+        : undefined) ??
+      result.summary ??
+      step.detail ??
+      step.label);
   const tokenSuffix = options.tokenSummary ? ` · ${options.tokenSummary}` : '';
   const parts = [
     style.white(primary),
@@ -1119,20 +1326,49 @@ function formatHarnessActiveLine(
   activity: string | undefined,
   frame: string,
   style: ChalkStyle,
+  options: {columns?: number} = {},
 ): string {
+  const columns =
+    typeof options.columns === 'number' && options.columns > 0
+      ? Math.floor(options.columns)
+      : undefined;
   const agent = step?.label ?? 'waiting';
-  const activityText = activity ? compact(activity, 80) : 'running';
-  const head = [
-    style.cyan(frame),
-    style.bold(runId),
-    style.dim(taskLabel(task)),
-    style.dim(retryLabel(task)),
-  ]
-    .filter(Boolean)
+  const activityText = activity
+    ? activity.trim().replace(/\s+/g, ' ')
+    : 'working';
+  const prefixSegments = [
+    {plain: frame, render: (value: string) => style.cyan(value)},
+    {plain: runId, render: (value: string) => style.bold(value)},
+    {plain: taskLabel(task), render: (value: string) => style.dim(value)},
+    {plain: retryLabel(task), render: (value: string) => style.dim(value)},
+  ];
+  const agentSegment = {
+    plain: agent,
+    render: (value: string) => style.white(value),
+  };
+  const visiblePrefix = [...prefixSegments, agentSegment];
+  const renderedPrefix = visiblePrefix
+    .map(segment => segment.render(segment.plain))
     .join(' ');
-  return [head, style.white(agent), style.dim(activityText)]
-    .filter(Boolean)
-    .join('  ');
+
+  if (!columns) {
+    return [renderedPrefix, style.dim(activityText)].join('  ');
+  }
+
+  const prefixLength = plainLength(
+    visiblePrefix.map(segment => segment.plain).join(' '),
+  );
+  const availableForActivity = columns - prefixLength - 2;
+  if (availableForActivity <= 0) {
+    return fitVisibleStyledLine(visiblePrefix, columns);
+  }
+
+  const fittedActivity = fitVisibleText(activityText, availableForActivity);
+  if (!fittedActivity) {
+    return fitVisibleStyledLine(visiblePrefix, columns);
+  }
+
+  return [renderedPrefix, style.dim(fittedActivity)].join('  ');
 }
 
 function resolveHarnessLiveActivity(state: {
@@ -1158,6 +1394,10 @@ function retryLabel(task: HarnessTaskContext): string {
 
 function retryProgress(task: HarnessTaskContext): string {
   return `${task.attempt ?? 1}/${task.maxAttempts ?? 1}`;
+}
+
+function isCommandStep(step: HarnessProgressStep): boolean {
+  return typeof step.activity === 'string' && step.activity.trim().length > 0;
 }
 
 function stepLabel(step: HarnessProgressStep): string {
@@ -1192,7 +1432,124 @@ function stylePrefix(
 }
 
 function plainLength(value: string): number {
-  return value.length;
+  return stripAnsi(value).length;
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(
+    // eslint-disable-next-line no-control-regex
+    /\u001b\[[0-9;]*m/g,
+    '',
+  );
+}
+
+function fitVisibleText(value: string, maxLength: number): string {
+  const normalized = compact(value, Number.MAX_SAFE_INTEGER);
+  if (maxLength <= 0 || normalized.length === 0) {
+    return '';
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  if (maxLength <= 3) {
+    return normalized.slice(0, maxLength);
+  }
+
+  const words = normalized.split(' ');
+  let fitted = '';
+  for (const word of words) {
+    const next = fitted.length === 0 ? word : `${fitted} ${word}`;
+    if (next.length > maxLength - 3) {
+      break;
+    }
+    fitted = next;
+  }
+
+  if (fitted.length > 0) {
+    return `${fitted}...`;
+  }
+
+  return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+interface StyledTextSegment {
+  plain: string;
+  render: (value: string) => string;
+}
+
+function fitVisibleStyledLine(
+  parts: StyledTextSegment[],
+  columns: number,
+): string {
+  if (columns <= 0) {
+    return '';
+  }
+
+  const visibleParts: string[] = [];
+  let visibleLength = 0;
+  for (const part of parts.filter((segment): segment is StyledTextSegment =>
+    Boolean(segment?.plain),
+  )) {
+    const separator = visibleParts.length === 0 ? '' : ' ';
+    const separatorLength = separator.length;
+    const nextLength = plainLength(part.plain);
+    if (visibleLength + separatorLength + nextLength <= columns) {
+      if (separator) {
+        visibleParts.push(separator);
+      }
+      visibleParts.push(part.render(part.plain));
+      visibleLength += separatorLength + nextLength;
+      continue;
+    }
+
+    const remaining = columns - visibleLength - separatorLength;
+    const fitted = fitVisibleText(part.plain, remaining);
+    if (fitted.length > 0) {
+      if (separator) {
+        visibleParts.push(separator);
+      }
+      visibleParts.push(part.render(fitted));
+    }
+    break;
+  }
+
+  return visibleParts.join('');
+}
+
+function commandStepSummary(status: HarnessProgressResult['status']): string {
+  if (status === 'success') {
+    return 'passed';
+  }
+  if (status === 'blocked') {
+    return 'blocked';
+  }
+  return 'failed';
+}
+
+interface KeyValueRow {
+  label: string;
+  value?: string;
+}
+
+export function formatKeyValueReport(
+  rows: KeyValueRow[],
+  options: {tty?: boolean} = {},
+): string {
+  const visibleRows = rows.filter(
+    row => row.value !== undefined && row.value.length > 0,
+  );
+  if (visibleRows.length === 0) {
+    return '';
+  }
+
+  if (!options.tty) {
+    return visibleRows.map(row => `${row.label}: ${row.value}`).join('\n');
+  }
+
+  const width = Math.max(...visibleRows.map(row => row.label.length));
+  return visibleRows
+    .map(row => `${row.label.padEnd(width)} ${row.value}`)
+    .join('\n');
 }
 
 export function formatRunSummary(
@@ -1333,11 +1690,26 @@ function formatCompactRunSummary(
 ): string {
   const style = createStyle(options.color);
   const lines = [
-    compactTitle(metadata, style),
-    `run: ${style.dim(metadata.paths.runDir)}`,
-    `tools: ${summarizeTools(metadata.toolUsage)}`,
-    `edits: ${summarizeFiles(metadata.changedFiles)}`,
-    formatTokenUsageSummary(metadata.tokenUsage, {compact: true}),
+    options.tty
+      ? `${style.bold(metadata.agent.id)}  ${statusText(metadata.status, style)}`
+      : `${metadata.agent.id}: ${statusText(metadata.status, style)}`,
+    formatKeyValueReport(
+      [
+        {label: 'duration', value: formatDuration(metadata.durationMs)},
+        {label: 'run', value: metadata.paths.runDir},
+        {label: 'tools', value: summarizeTools(metadata.toolUsage)},
+        {label: 'edits', value: summarizeFiles(metadata.changedFiles)},
+        metadata.tokenUsage
+          ? {
+              label: 'tokens',
+              value: formatTokenUsageSummary(metadata.tokenUsage, {
+                compact: true,
+              })?.slice('tokens: '.length),
+            }
+          : undefined,
+      ].filter(Boolean) as KeyValueRow[],
+      {tty: options.tty},
+    ),
   ];
 
   const sections = [
@@ -1362,29 +1734,36 @@ function formatDetailedRunSummary(
       : metadata.status === 'timed_out'
         ? 'AgentQ Run Timed Out'
         : 'AgentQ Run Failed';
-  const runName = runDirName(metadata.paths.runDir);
   const toolTotals = summarizeTools(metadata.toolUsage);
   const editTotals = summarizeFiles(metadata.changedFiles);
-  const rows = [
-    row('agent', metadata.agent.id),
-    row('result', statusText(metadata.status, style)),
-    row('model', `${metadata.config.model} / ${metadata.config.reasoning}`),
-    row('output', metadata.config.resultMode),
-    row('duration', formatDuration(metadata.durationMs)),
-    row('tools', toolTotals),
-    row('edits', editTotals),
-    row('events', String(metadata.eventCount)),
-    row(
-      'tokens',
-      formatTokenUsageSummary(metadata.tokenUsage, {compact: false}).slice(
-        'tokens: '.length,
-      ),
-    ),
-    row('run', runName),
-  ];
+  const rows = formatKeyValueReport(
+    [
+      {label: 'agent', value: metadata.agent.id},
+      {label: 'result', value: statusText(metadata.status, style)},
+      {
+        label: 'model',
+        value: `${metadata.config.model} / ${metadata.config.reasoning}`,
+      },
+      {label: 'output', value: metadata.config.resultMode},
+      {label: 'duration', value: formatDuration(metadata.durationMs)},
+      {label: 'tools', value: toolTotals},
+      {label: 'edits', value: editTotals},
+      {label: 'events', value: String(metadata.eventCount)},
+      metadata.tokenUsage
+        ? {
+            label: 'tokens',
+            value: formatTokenUsageSummary(metadata.tokenUsage, {
+              compact: false,
+            })?.slice('tokens: '.length),
+          }
+        : undefined,
+      {label: 'run', value: metadata.paths.runDir},
+    ].filter(Boolean) as KeyValueRow[],
+    {tty: options.tty},
+  );
 
   const sections = [
-    box(title, rows, style),
+    [style.bold(title), rows].join('\n'),
     formatChangedFiles(metadata.changedFiles, style),
     formatFailure(metadata, style),
     formatArtifacts(metadata, style),
@@ -1392,17 +1771,6 @@ function formatDetailedRunSummary(
   ].filter(section => section.length > 0);
 
   return sections.join('\n\n');
-}
-
-function compactTitle(metadata: RunMetadata, style: ChalkStyle): string {
-  const connector = metadata.status === 'succeeded' ? 'in' : 'after';
-  return [
-    style.bold('AgentQ'),
-    metadata.agent.id,
-    statusText(metadata.status, style),
-    connector,
-    formatDuration(metadata.durationMs),
-  ].join(' ');
 }
 
 function createStyle(color?: boolean): ChalkStyle {
@@ -1706,12 +2074,12 @@ function summarizeFiles(files: ChangedFileSummary[]): string {
   return `${files.length} ${files.length === 1 ? 'file' : 'files'} changed`;
 }
 
-function formatTokenUsageSummary(
+export function formatTokenUsageSummary(
   tokenUsage: RunMetadata['tokenUsage'],
   options: {compact: boolean},
-): string {
+): string | undefined {
   if (!tokenUsage) {
-    return 'tokens: n/a';
+    return undefined;
   }
 
   const fields = [
@@ -1725,7 +2093,12 @@ function formatTokenUsageSummary(
     ['total', formatTokenValue(tokenUsage.totalTokens, options.compact)],
   ] as const;
 
-  return `tokens: ${fields
+  const visibleFields = fields.filter(([, value]) => value !== undefined);
+  if (visibleFields.length === 0) {
+    return undefined;
+  }
+
+  return `tokens: ${visibleFields
     .map(([label, value]) => `${label} ${value ?? 'n/a'}`)
     .join(' · ')}`;
 }

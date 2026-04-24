@@ -192,7 +192,7 @@ tasks.json
 
 `log.jsonl` records harness starts, retries, check results, and pointers to nested agent run directories. Agent stdout, stderr, raw JSONL, final answers, and agent-created artifacts stay in the agent run folders under `~/.agentq/runs`. `tasks.json` is the current harness state.
 
-Default harness output stays bounded: on a TTY it keeps a live status row for the active task, and on non-TTY output it prints a compact history of completed tasks plus concise failure context. Use `-v` to see step structure and assistant messages once, `-vv` to include tool calls and diagnostics, and `--jsonl` to stream the same event model as machine-readable lines.
+Default harness output stays bounded: on a TTY it keeps one live status row for the active task, and on non-TTY output it prints a compact history of completed tasks plus concise failure context. Use `-v` for a structured task/step timeline, `-vv` for tool calls and diagnostics, and `--jsonl` to stream the same event model as machine-readable lines.
 
 For example, this prints the JSONL status records and filters them with `jq`:
 
