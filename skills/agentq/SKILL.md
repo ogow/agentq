@@ -33,6 +33,7 @@ Use eval packs after manual runs reveal a behavior worth preserving or improving
 - For creating well-structured agents, model/reasoning choices, and templates, read [references/agent-authoring.md](references/agent-authoring.md).
 - For exact artifact delivery contracts and highly reliable prompt patterns, read [references/reliability-and-artifacts.md](references/reliability-and-artifacts.md).
 - For complete examples of well-structured plain-text and JSON/harness agents, read [references/examples.md](references/examples.md).
+- For model routing, specific data agents, and deciding when reusable knowledge should become a skill, read [references/model-routing-and-skill-boundaries.md](references/model-routing-and-skill-boundaries.md).
 - For CLI commands, run outputs, artifact locations, and previous-run lookup, read [references/cli.md](references/cli.md).
 - For setting up one-pass steps, loop harnesses, planner decisions, harness input, and run records, read [references/harnesses.md](references/harnesses.md).
 - For local eval packs, deterministic graders, run records, and high-quality eval design, read [references/evals.md](references/evals.md).

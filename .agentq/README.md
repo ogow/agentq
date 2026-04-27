@@ -51,3 +51,10 @@ The main guide is:
 ```text
 docs/robust-agents-and-harnesses.md
 ```
+
+Copyable examples for agent prompts, artifact contracts, harness shapes, model
+routing, and skill boundaries live in the repo-local AgentQ skill:
+
+```text
+skills/agentq/references/
+```

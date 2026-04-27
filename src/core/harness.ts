@@ -337,7 +337,7 @@ export async function inspectHarnessRun(
     finishedAt: state.finishedAt ?? new Date().toISOString(),
     harnessName: state.harnessName,
     completedItems: countCompletedHarnessItemsFromState(state, state.status),
-    iterations: state.attempts.length,
+    iterations: countHarnessIterations(state),
     runDir: state.runDir,
     startedAt: state.startedAt,
     status: state.status,
@@ -1141,7 +1141,7 @@ async function finishHarnessRun(options: {
       options.state,
       options.status,
     ),
-    iterations: options.state.attempts.length,
+    iterations: countHarnessIterations(options.state),
     runDir: options.paths.runDir,
     startedAt: options.startedAt.toISOString(),
     status: options.status,
@@ -1330,6 +1330,25 @@ function countCompletedHarnessItemsFromState(
   }
 
   return status === 'success' ? 1 : 0;
+}
+
+function countHarnessIterations(state: {
+  attempts: HarnessAttemptRecord[];
+  status: HarnessRunStatus;
+  stepResults?: Record<string, StepResult>;
+}): number {
+  if (state.attempts.length > 0) {
+    return state.attempts.length;
+  }
+
+  if (
+    Object.keys(state.stepResults ?? {}).length > 0 ||
+    state.status !== 'running'
+  ) {
+    return 1;
+  }
+
+  return 0;
 }
 
 function countCompletedLoopItems(stepResults: StepResult[]): number {

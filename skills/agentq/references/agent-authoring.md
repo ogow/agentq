@@ -19,10 +19,14 @@ timeout: 5m
 ---
 
 <instructions>
+<role>
 You are a focused code reviewer.
+</role>
 
+<goal>
 Find correctness bugs, missing verification, and risky behavior changes.
 Do not comment on style unless it affects correctness.
+</goal>
 </instructions>
 
 <task>
@@ -30,8 +34,10 @@ Do not comment on style unless it affects correctness.
 </task>
 
 <artifacts>
+<output_contract>
 Write the final answer to the normal AgentQ output.
 If you create extra files, write them under {{artifacts}}.
+</output_contract>
 </artifacts>
 ```
 
@@ -53,13 +59,20 @@ Useful optional fields:
 
 ## Prompt Structure
 
-Use anchors sparingly and consistently:
+Use XML anchors sparingly and consistently. Use Markdown headings in skill and
+reference prose; use XML anchors inside agent prompts.
 
 - `<instructions>`: durable behavior and role.
+- `<role>`: the agent's identity and perspective.
+- `<goal>`: the single job to complete.
+- `<evidence>`: files, commands, records, or context to inspect before claims.
+- `<constraints>`: permissions, non-goals, and stop conditions.
+- `<verification>`: commands, checks, or evidence expected before claiming success.
 - `<task>`: include `{{task}}` as the human-visible placeholder; AgentQ replaces the tag contents with the run task.
 - `<artifacts>`: final answer and file output contract. Use `{{artifacts}}` as the run artifact directory placeholder.
+- `<artifact_rules>`: where extra files may be written.
+- `<output_contract>`: exact final answer shape.
 - `<context>`: optional local notes that are part of the agent, not the project context file.
-- `<verification>`: commands, checks, or evidence expected before claiming success.
 - `<handoff>`: optional format for an orchestrator or later human.
 
 Good agents are narrow, but avoid splitting roles just because task history changes. A build agent can handle both new implementation and repair when the harness provides clear feedback. Use specialist agents for genuinely different jobs such as review, summarization, test writing, release notes, or migration planning.
@@ -74,20 +87,21 @@ checklist.
 
 Use the cheapest model/reasoning pair that reliably does the job. Prefer local project defaults when they exist.
 
-| Agent work                                                          | Model tier                       | Reasoning           |
-| ------------------------------------------------------------------- | -------------------------------- | ------------------- |
-| Formatting, summarizing, listing, simple extraction                 | smaller/mini                     | `none` or `minimal` |
-| Focused review, simple code edits, docs updates                     | smaller/mini or default frontier | `low`               |
-| Multi-file code changes, debugging, migration planning              | frontier                         | `medium`            |
-| Complex architecture, ambiguous failures, security-sensitive review | frontier                         | `high`              |
-| Rare deep investigation where cost/latency is acceptable            | strongest frontier               | `xhigh`             |
+| Agent work | Model tier | Reasoning |
+| --- | --- | --- |
+| Formatting, summarizing, listing, simple extraction | smaller/mini | `none` or `minimal` |
+| Focused review, simple code edits, docs updates | smaller/mini | `low` |
+| Bounded implementation from a clear plan | smaller/mini | `medium` |
+| Ambiguous planning, multi-file design, subtle review | frontier | `medium` or `high` |
+| Failure diagnosis and agent improvement from run evidence | strongest available frontier | `high` |
 
 Practical defaults:
 
-- Use `gpt-5.4-mini` with `reasoning: low` for most fast project agents.
-- Use `gpt-5.4` with `reasoning: medium` for agents that edit code across files or need stronger judgment.
+- Use `gpt-5.4-mini` with `reasoning: low` or `medium` for most fast project agents and bounded implementation tasks.
+- Use `gpt-5.5` for difficult planning, high-value review, and failure diagnosis where better judgment can reduce bad retries.
 - Use `reasoning: none` only when the agent mostly transforms or summarizes information and does not need planning.
 - Avoid `high`/`xhigh` until manual runs prove the agent needs it.
+- For a fuller routing policy, read [model-routing-and-skill-boundaries.md](model-routing-and-skill-boundaries.md).
 
 ## Sandbox And Timeout Choice
 

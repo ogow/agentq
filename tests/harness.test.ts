@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'bun:test';
 import {existsSync, mkdtempSync} from 'node:fs';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readdir, readFile, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {
@@ -192,13 +192,11 @@ inputs:
       const firstLine = stderr.split('\n')[0] ?? '';
 
       expect(lines[0]).toMatch(/^[^\s]+$/);
-      expect(stderr).toContain('▸ task 1/1  retry 1/1  work');
-      expect(stderr).toContain('▸ build  builder');
+      expect(stderr).toContain('▶ task 1/1  retry 1/1  work');
+      expect(stderr).toContain('  ● build  builder');
+      expect(stderr).toContain('    … mapping the current CLI and run storage');
       expect(stderr).toContain(
-        'trace  mapping the current CLI and run storage',
-      );
-      expect(stderr).toContain(
-        '✓ build  builder  Verified the local eval runner end to end',
+        '  ✓ build  Verified the local eval runner end to end',
       );
       expect(stderr).not.toContain('agent builder --:-- message');
       expect(stderr).not.toContain(
@@ -293,6 +291,199 @@ inputs:
         'Failure\n  agent: builder\n  retry: 1/1\n  reason: Build failed.',
       );
       expect(stderr).not.toContain('task:');
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('fails with a concise reason when an agent returns invalid JSON', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+agent: builder
+inputs:
+  task: string
+`,
+    );
+
+    const provider = outputProvider(['not json\n']);
+
+    try {
+      const {result, stderr} = await runHarnessWithOutput({
+        inputText: 'break it',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+      const state = JSON.parse(
+        await readFile(join(result.runDir, 'tasks.json'), 'utf8'),
+      ) as {attempts: Array<{agentRunDir?: string; summary: string}>};
+      const events = await readHarnessLogEvents({run: result.runDir});
+      const harnessFiles = (await readdir(result.runDir)).sort();
+      const agentRunDir = state.attempts[0]?.agentRunDir;
+
+      expect(result.status).toBe('failed');
+      expect(result.summary).toBe(
+        'Agent failed: Agent "builder" returned invalid JSON.',
+      );
+      expect(result.feedback).toEqual({
+        problem: 'Agent failed: Agent "builder" returned invalid JSON.',
+      });
+      expect(stderr).toContain(
+        'reason: Agent failed: Agent "builder" returned invalid JSON.',
+      );
+      expect(stderr).not.toContain('not json');
+      expect(agentRunDir).toBeTruthy();
+      expect(existsSync(agentRunDir!)).toBe(true);
+      expect(harnessFiles).toEqual(['log.jsonl', 'tasks.json']);
+      expect(
+        events.find(event => event.kind === 'agent_run_finished'),
+      ).toMatchObject({
+        agent: 'builder',
+        agentRunDir,
+        stepId: 'attempt-1.agent',
+      });
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('fails when an agent returns JSON that is not an object', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+agent: builder
+inputs:
+  task: string
+`,
+    );
+
+    const provider = outputProvider(['["nope"]\n']);
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        inputText: 'break it',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+
+      expect(result.status).toBe('failed');
+      expect(result.summary).toBe(
+        'Agent failed: Agent "builder" output must be an object.',
+      );
+      expect(result.feedback).toEqual({
+        problem: 'Agent failed: Agent "builder" output must be an object.',
+      });
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('fails when an agent omits required AgentOutput fields', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+agent: builder
+inputs:
+  task: string
+`,
+    );
+
+    const provider = outputProvider([
+      `${JSON.stringify({result: {changedFiles: []}})}\n`,
+    ]);
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        inputText: 'break it',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+
+      expect(result.status).toBe('failed');
+      expect(result.summary).toBe(
+        'Agent failed: Agent "builder" output must include status and summary.',
+      );
+      expect(result.feedback).toEqual({
+        problem:
+          'Agent failed: Agent "builder" output must include status and summary.',
+      });
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('preserves supported agent failure kinds from AgentOutput', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+agent: builder
+inputs:
+  task: string
+`,
+    );
+
+    const provider = outputProvider([
+      agentOutput(
+        'failed',
+        'Provider credentials are unavailable.',
+        null,
+        'environment',
+      ),
+    ]);
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        inputText: 'break it',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+      const state = JSON.parse(
+        await readFile(join(result.runDir, 'tasks.json'), 'utf8'),
+      ) as {
+        attempts: Array<{
+          agentRunDir?: string;
+          failureKind?: string;
+          status: string;
+          summary: string;
+        }>;
+      };
+
+      expect(result.status).toBe('failed');
+      expect(result.summary).toBe('Provider credentials are unavailable.');
+      expect(result.feedback).toEqual({
+        problem: 'Provider credentials are unavailable.',
+      });
+      expect(state.attempts).toHaveLength(1);
+      expect(state.attempts[0]).toMatchObject({
+        failureKind: 'environment',
+        status: 'failed',
+        summary: 'Provider credentials are unavailable.',
+      });
+      expect(state.attempts[0]?.agentRunDir).toBeTruthy();
     } finally {
       restoreHome();
     }

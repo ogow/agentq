@@ -20,27 +20,28 @@ run metadata and harness ledgers -> AgentQ writes them
 
 ```md
 <artifacts>
-Final answer:
-- Start with `Outcome: succeeded`, `Outcome: partial`, or `Outcome: blocked`.
-- Summarize the result in 3-8 bullets.
-- Include verification performed.
-- Include every created artifact path.
+<output_contract>
+Start with `Outcome: succeeded`, `Outcome: partial`, or `Outcome: blocked`.
+Summarize the result in 3-8 bullets.
+Include verification performed.
+Include every created artifact path.
+</output_contract>
 
-Durable files:
+<artifact_rules>
+Write additional files only when this task asks for them.
+Write all additional files under {{artifacts}}.
+Create exactly these files:
+- `plan.md`: short implementation or investigation plan.
+- `findings.json`: machine-readable findings when findings exist.
+Do not write generated files elsewhere.
+</artifact_rules>
 
-- Write additional files only when this task asks for them.
-- Write all additional files under {{artifacts}}.
-- Create exactly these files:
-  - `plan.md`: short implementation or investigation plan.
-  - `findings.json`: machine-readable findings when findings exist.
-- Do not write generated files elsewhere.
-
-When blocked:
-
-- Do not fabricate missing evidence.
-- Explain what evidence or permission is missing.
-- Do not create partial artifacts unless they are useful to the user.
-  </artifacts>
+<blocked_rules>
+Do not fabricate missing evidence.
+Explain what evidence or permission is missing.
+Do not create partial artifacts unless they are useful to the user.
+</blocked_rules>
+</artifacts>
 ```
 
 For tasks that do not need files, say so:
@@ -84,34 +85,36 @@ Use this pattern for agents that review, edit, debug, or produce reusable output
 
 ```md
 <instructions>
+<role>
 You are a focused [role].
+</role>
 
-Goal:
+<goal>
+[One job only.]
+</goal>
 
-- [One job only.]
+<evidence>
+Inspect [files/commands/context] before making claims.
+Prefer repository evidence over assumptions.
+If evidence is missing, return `Outcome: blocked`.
+</evidence>
 
-Evidence:
+<constraints>
+You may [allowed actions].
+You must not [forbidden actions].
+Keep changes scoped to [paths or behavior].
+</constraints>
 
-- Inspect [files/commands/context] before making claims.
-- Prefer repository evidence over assumptions.
-- If evidence is missing, return `Outcome: blocked`.
+<verification>
+Run or explain [specific command/check].
+If verification cannot run, state why.
+</verification>
 
-Constraints:
-
-- You may [allowed actions].
-- You must not [forbidden actions].
-- Keep changes scoped to [paths or behavior].
-
-Verification:
-
-- Run or explain [specific command/check].
-- If verification cannot run, state why.
-
-Output:
-
-- Follow the artifact contract exactly.
-- Do not include unsupported claims.
-  </instructions>
+<output_rules>
+Follow the artifact contract exactly.
+Do not include unsupported claims.
+</output_rules>
+</instructions>
 
 <task>
 {{task}}

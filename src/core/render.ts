@@ -387,116 +387,13 @@ export function createHarnessProgressRenderer({
     };
   }
 
-  if (mode.verbosity === 1 && outputStream.isTTY) {
-    return createHarnessVerboseTtyRenderer({
-      color,
-      harnessPath,
-      harnessTitle,
+  if (mode.verbosity >= 1) {
+    return createHarnessThreadedVerboseRenderer({
       mode,
       outputStream,
       runId,
       style,
     });
-  }
-
-  if (mode.verbosity >= 1) {
-    let currentTokenSummary: string | undefined;
-    let currentTask: HarnessTaskContext | undefined;
-    let currentStep: HarnessProgressStep | undefined;
-    let printedRunHeader = false;
-    const renderRunHeader = () => {
-      if (printedRunHeader || !runId) {
-        return;
-      }
-      printedRunHeader = true;
-      outputStream.write(`${style.bold(runId)}\n`);
-    };
-    return {
-      finishTask: (task, result) => {
-        const finishedStep = currentStep;
-        const tokenSummary =
-          mode.verbosity >= 1 ? currentTokenSummary : undefined;
-        currentTask = undefined;
-        currentStep = undefined;
-        currentTokenSummary = undefined;
-        outputStream.write(
-          `${formatHarnessCompletionLine(task, result, style, {
-            tokenSummary,
-          })}\n`,
-        );
-        if (result.status !== 'success') {
-          outputStream.write(
-            `${formatHarnessFailureBlock(task, result, style, {
-              harnessPath,
-              harnessTitle,
-              step: finishedStep,
-              verbosity: mode.verbosity,
-            })}\n`,
-          );
-        }
-      },
-      finishStep: (step, result) => {
-        const tokenSummary =
-          mode.verbosity >= 1 ? currentTokenSummary : undefined;
-        currentStep = undefined;
-        currentTokenSummary = undefined;
-        outputStream.write(
-          `${formatHarnessStepLine(step, result, style, {
-            compactStep: mode.verbosity === 1,
-            commandStep: isCommandStep(step),
-            tokenSummary,
-          })}\n`,
-        );
-        if (
-          result.status !== 'success' &&
-          (mode.verbosity >= 2 || !currentTask)
-        ) {
-          outputStream.write(
-            `${formatHarnessFailureBlock(undefined, result, style, {
-              harnessPath,
-              harnessTitle,
-              step,
-              verbosity: mode.verbosity,
-            })}\n`,
-          );
-        }
-      },
-      onEvent: event => {
-        const line = formatHarnessVerboseEvent(event, {
-          color,
-          step: currentStep,
-          verbosity: mode.verbosity,
-        });
-        if (line) {
-          outputStream.write(`${line}\n`);
-          return;
-        }
-        if (mode.verbosity >= 1 && event.kind === 'token_usage') {
-          currentTokenSummary = formatTokenUsageSummary(event.tokenUsage, {
-            compact: true,
-          });
-          return;
-        }
-      },
-      startTask: task => {
-        renderRunHeader();
-        currentTask = task;
-        currentTokenSummary = undefined;
-        outputStream.write(`${formatHarnessStartLine(task, style)}\n`);
-      },
-      startStep: step => {
-        renderRunHeader();
-        currentStep = step;
-        currentTokenSummary = undefined;
-        outputStream.write(
-          `${formatHarnessStepStartLine(step, style, {
-            compactStep: mode.verbosity === 1,
-            commandStep: isCommandStep(step),
-          })}\n`,
-        );
-      },
-      stop: () => undefined,
-    };
   }
 
   if (!outputStream.isTTY) {
@@ -704,18 +601,12 @@ export function createHarnessProgressRenderer({
   };
 }
 
-function createHarnessVerboseTtyRenderer({
-  color,
-  harnessPath,
-  harnessTitle,
+function createHarnessThreadedVerboseRenderer({
   mode,
   outputStream,
   runId,
   style,
 }: {
-  color: boolean | undefined;
-  harnessPath?: string;
-  harnessTitle: string;
   mode: {format: OutputFormat; verbosity: Verbosity};
   outputStream: RenderStream;
   runId?: string;
@@ -724,9 +615,9 @@ function createHarnessVerboseTtyRenderer({
   let currentTokenSummary: string | undefined;
   let currentTask: HarnessTaskContext | undefined;
   let currentStep: HarnessProgressStep | undefined;
-  let currentLiveStep: HarnessProgressStep | undefined;
+  let pendingRetry: {attempt: number; message: string} | undefined;
+  let lastFailedTaskAttempt: number | undefined;
   let printedRunHeader = false;
-  let lastPlainLength = 0;
 
   const renderRunHeader = () => {
     if (printedRunHeader || !runId) {
@@ -736,141 +627,471 @@ function createHarnessVerboseTtyRenderer({
     outputStream.write(`${style.bold(runId)}\n`);
   };
 
-  const clearLine = () => {
-    if (lastPlainLength > 0) {
-      outputStream.write('\r\x1b[2K');
-      lastPlainLength = 0;
-    }
-  };
-
-  const renderLiveStep = () => {
-    if (!currentTask || !currentLiveStep) {
-      return;
-    }
-
-    const line = formatHarnessStepStartLine(currentLiveStep, style, {
-      compactStep: true,
-      commandStep: true,
-      live: true,
-    });
-    outputStream.write(`\r\x1b[2K${line}`);
-    lastPlainLength = plainLength(line);
-  };
-
   return {
     finishTask: (task, result) => {
       const finishedStep = result.step ?? currentStep;
-      clearLine();
+      const tokenSummary = currentTokenSummary;
       currentTask = undefined;
       currentStep = undefined;
-      currentLiveStep = undefined;
       currentTokenSummary = undefined;
-      outputStream.write(
-        `${formatHarnessCompletionLine(task, result, style)}\n`,
-      );
-      if (result.status !== 'success') {
+      pendingRetry = undefined;
+      if (mode.verbosity >= 2 && finishedStep) {
+        const diagnostics = formatHarnessThreadedResultDiagnostics(
+          finishedStep,
+          result,
+          style,
+          {columns: outputStream.columns, task},
+        );
+        for (const diagnostic of diagnostics) {
+          outputStream.write(`${diagnostic}\n`);
+        }
+      }
+      if (
+        result.status !== 'success' &&
+        lastFailedTaskAttempt !== (task.attempt ?? 1)
+      ) {
         outputStream.write(
-          `${formatHarnessFailureBlock(task, result, style, {
-            harnessPath,
-            harnessTitle,
-            step: finishedStep,
-            verbosity: mode.verbosity,
+          `${formatHarnessThreadedTaskOutcome(task, result, style, {
+            columns: outputStream.columns,
+          })}\n`,
+        );
+      } else if (result.status === 'success') {
+        outputStream.write(
+          `${formatHarnessThreadedTaskOutcome(task, result, style, {
+            columns: outputStream.columns,
+            tokenSummary,
           })}\n`,
         );
       }
+      lastFailedTaskAttempt = undefined;
     },
     finishStep: (step, result) => {
+      const activeStep = currentStep ?? step;
       const tokenSummary = currentTokenSummary;
-      const commandStep = isCommandStep(step);
-      clearLine();
-      if (result.status !== 'success' && !currentTask) {
-        outputStream.write(
-          `${formatHarnessFailureBlock(undefined, result, style, {
-            harnessPath,
-            harnessTitle,
-            step,
-            verbosity: mode.verbosity,
-          })}\n`,
+      if (mode.verbosity >= 2) {
+        const diagnostics = formatHarnessThreadedResultDiagnostics(
+          activeStep,
+          result,
+          style,
+          {
+            columns: outputStream.columns,
+            task: currentTask,
+          },
         );
-        return;
-      }
-      if (result.status !== 'success' && result.durable === false) {
-        currentLiveStep = step;
-        renderLiveStep();
-        return;
+        for (const diagnostic of diagnostics) {
+          outputStream.write(`${diagnostic}\n`);
+        }
       }
       currentStep = undefined;
-      currentLiveStep = undefined;
       currentTokenSummary = undefined;
+      if (result.status !== 'success' && currentTask) {
+        outputStream.write(
+          `${formatHarnessThreadedStepOutcome(activeStep, result, style, {
+            columns: outputStream.columns,
+            task: currentTask,
+          })}\n`,
+        );
+        outputStream.write(
+          `${formatHarnessThreadedTaskOutcome(currentTask, result, style, {
+            columns: outputStream.columns,
+          })}\n`,
+        );
+        pendingRetry = {
+          attempt: (currentTask.attempt ?? 1) + 1,
+          message: 'retrying with previous feedback',
+        };
+        lastFailedTaskAttempt = currentTask.attempt ?? 1;
+        return;
+      }
       outputStream.write(
-        `${formatHarnessStepLine(step, result, style, {
-          compactStep: true,
-          commandStep,
+        `${formatHarnessThreadedStepOutcome(activeStep, result, style, {
+          columns: outputStream.columns,
+          task: currentTask,
           tokenSummary,
         })}\n`,
       );
-      if (
-        result.status !== 'success' &&
-        (mode.verbosity >= 2 || !currentTask)
-      ) {
-        outputStream.write(
-          `${formatHarnessFailureBlock(undefined, result, style, {
-            harnessPath,
-            harnessTitle,
-            step,
-            verbosity: mode.verbosity,
-          })}\n`,
-        );
-      }
     },
     onEvent: event => {
-      const line = formatHarnessVerboseEvent(event, {
-        color,
+      if (event.kind === 'token_usage') {
+        currentTokenSummary =
+          mode.verbosity >= 2
+            ? formatTokenUsageSummary(event.tokenUsage, {
+                compact: true,
+              })
+            : formatHarnessCompactTokenSummary(event.tokenUsage);
+        return;
+      }
+      const line = formatHarnessThreadedEvent(event, style, {
+        columns: outputStream.columns,
+        task: currentTask,
         step: currentStep,
         verbosity: mode.verbosity,
       });
       if (line) {
-        clearLine();
         outputStream.write(`${line}\n`);
-        if (currentLiveStep) {
-          renderLiveStep();
-        }
-        return;
-      }
-      if (mode.verbosity >= 1 && event.kind === 'token_usage') {
-        currentTokenSummary = formatTokenUsageSummary(event.tokenUsage, {
-          compact: true,
-        });
       }
     },
     startTask: task => {
       renderRunHeader();
       currentTask = task;
       currentStep = undefined;
-      currentLiveStep = undefined;
       currentTokenSummary = undefined;
-      outputStream.write(`${formatHarnessStartLine(task, style)}\n`);
-    },
-    startStep: step => {
-      renderRunHeader();
-      currentStep = step;
-      currentTokenSummary = undefined;
-      if (isCommandStep(step)) {
-        currentLiveStep = step;
-        renderLiveStep();
-        return;
-      }
+      pendingRetry = undefined;
+      lastFailedTaskAttempt = undefined;
       outputStream.write(
-        `${formatHarnessStepStartLine(step, style, {
-          compactStep: true,
-          commandStep: false,
+        `${formatHarnessThreadedTaskStart(task, style, {
+          columns: outputStream.columns,
         })}\n`,
       );
     },
-    stop: () => {
-      clearLine();
+    startStep: step => {
+      renderRunHeader();
+      if (
+        currentTask &&
+        pendingRetry &&
+        (currentTask.attempt ?? 1) === pendingRetry.attempt
+      ) {
+        outputStream.write(
+          `${formatHarnessThreadedRetry(
+            currentTask,
+            pendingRetry.message,
+            style,
+            {
+              columns: outputStream.columns,
+            },
+          )}\n`,
+        );
+        pendingRetry = undefined;
+      }
+      currentStep = step;
+      currentTokenSummary = undefined;
+      outputStream.write(
+        `${formatHarnessThreadedStepStart(step, style, {
+          columns: outputStream.columns,
+          task: currentTask,
+        })}\n`,
+      );
+      if (mode.verbosity >= 2 && isCommandStep(step) && step.activity) {
+        outputStream.write(
+          `${formatHarnessDiagnostic('tool', `exec: ${step.activity}`, style, {
+            columns: outputStream.columns,
+            task: currentTask,
+          })}\n`,
+        );
+      }
     },
+    stop: () => undefined,
   };
+}
+
+const HARNESS_FALLBACK_WIDTH = 104;
+const HARNESS_MAX_WIDTH = 104;
+const HARNESS_MIN_MESSAGE_WIDTH = 20;
+const HARNESS_STEP_NAME_WIDTH = 32;
+const HARNESS_NOTE_PREFIX = '    … ';
+const HARNESS_TOP_NOTE_PREFIX = '  … ';
+const HARNESS_DIAGNOSTIC_LABEL_WIDTH = 5;
+
+function formatHarnessThreadedTaskStart(
+  task: HarnessTaskContext,
+  style: ChalkStyle,
+  options: {columns?: number} = {},
+): string {
+  return formatHarnessWrappedLine(
+    `${colorHarnessGlyph('▶', style)} ${style.white(taskLabel(task))}  ${style.dim(
+      retryLabel(task),
+    )}  `,
+    task.summary ?? task.detail ?? '',
+    style,
+    options,
+  );
+}
+
+function formatHarnessThreadedRetry(
+  task: HarnessTaskContext,
+  message: string,
+  style: ChalkStyle,
+  options: {columns?: number} = {},
+): string {
+  return formatHarnessWrappedLine(
+    `${colorHarnessGlyph('↻', style)} ${style.white(taskLabel(task))}  ${style.dim(
+      retryLabel(task),
+    )}  `,
+    message,
+    style,
+    options,
+  );
+}
+
+function formatHarnessThreadedTaskOutcome(
+  task: HarnessTaskContext,
+  result: HarnessProgressResult,
+  style: ChalkStyle,
+  options: {columns?: number; tokenSummary?: string} = {},
+): string {
+  const failurePrefix = result.status === 'blocked' ? 'blocked' : 'failed';
+  const message =
+    result.status === 'success'
+      ? (task.summary ?? result.summary ?? task.detail ?? '')
+      : `${failurePrefix}: ${result.summary ?? task.summary ?? failurePrefix}`;
+  return formatHarnessWrappedLine(
+    `${colorHarnessGlyph(threadedStatusGlyph(result.status), style)} ${style.white(
+      taskLabel(task),
+    )}  ${style.dim(retryLabel(task))}  `,
+    appendTokenSummary(
+      message,
+      result.status === 'success' ? options.tokenSummary : undefined,
+    ),
+    style,
+    options,
+  );
+}
+
+function formatHarnessThreadedStepStart(
+  step: HarnessProgressStep,
+  style: ChalkStyle,
+  options: {columns?: number; task?: HarnessTaskContext},
+): string {
+  const indent = options.task ? '  ' : '';
+  return `${indent}${colorHarnessGlyph('●', style)} ${style.white(
+    threadedStepScope(step),
+  )}  ${style.dim(threadedActor(step))}`;
+}
+
+function formatHarnessThreadedStepOutcome(
+  step: HarnessProgressStep,
+  result: HarnessProgressResult,
+  style: ChalkStyle,
+  options: {
+    columns?: number;
+    task?: HarnessTaskContext;
+    tokenSummary?: string;
+  } = {},
+): string {
+  const baseSummary = isCommandStep(step)
+    ? commandStepSummary(result.status)
+    : ((result.status === 'success'
+        ? formatHarnessOutputSummary(result.result)
+        : undefined) ??
+      result.summary ??
+      step.detail ??
+      step.label);
+  const summary =
+    result.status === 'success'
+      ? (baseSummary ?? '')
+      : `${result.status === 'blocked' ? 'blocked' : 'failed'}: ${baseSummary ?? result.status}`;
+  const indent = options.task ? '  ' : '';
+  return formatHarnessWrappedLine(
+    `${indent}${colorHarnessGlyph(threadedStatusGlyph(result.status), style)} ${style.white(
+      threadedStepScope(step),
+    )}  `,
+    appendTokenSummary(
+      summary,
+      result.status === 'success' ? options.tokenSummary : undefined,
+    ),
+    style,
+    options,
+  );
+}
+
+function formatHarnessThreadedEvent(
+  event: AgentQEvent,
+  style: ChalkStyle,
+  options: {
+    columns?: number;
+    task?: HarnessTaskContext;
+    step?: HarnessProgressStep;
+    verbosity: Verbosity;
+  },
+): string | undefined {
+  if (event.kind === 'assistant_message') {
+    if (looksLikeAgentOutput(event.message)) {
+      return undefined;
+    }
+    const message = normalizeWrappedMessage(event.message);
+    if (!message) {
+      return undefined;
+    }
+    return formatHarnessNote(message, style, {
+      columns: options.columns,
+      task: options.task,
+    });
+  }
+  if (options.verbosity < 2) {
+    return undefined;
+  }
+  if (event.kind === 'tool_started') {
+    const detail = event.command
+      ? `exec: ${event.command}`
+      : `${event.toolName ?? 'tool'} started`;
+    return formatHarnessDiagnostic('tool', detail, style, {
+      columns: options.columns,
+      task: options.task,
+    });
+  }
+  if (event.kind === 'tool_finished' && event.status === 'failed') {
+    const details = [
+      event.exitCode !== undefined ? `exit ${String(event.exitCode)}` : '',
+      event.message ? normalizeWrappedMessage(event.message) : '',
+    ].filter(Boolean);
+    return formatHarnessDiagnostic(
+      'fail',
+      details.join(' · ') || 'tool failed',
+      style,
+      {
+        columns: options.columns,
+        task: options.task,
+      },
+    );
+  }
+  return undefined;
+}
+
+function formatHarnessThreadedResultDiagnostics(
+  step: HarnessProgressStep,
+  result: HarnessProgressResult,
+  style: ChalkStyle,
+  options: {columns?: number; task?: HarnessTaskContext},
+): string[] {
+  const lines: string[] = [];
+  if (result.command && !isCommandStep(step)) {
+    lines.push(
+      formatHarnessDiagnostic('tool', `exec: ${result.command}`, style, {
+        columns: options.columns,
+        task: options.task,
+      }),
+    );
+  }
+  if (result.status === 'success') {
+    return lines;
+  }
+  const details = [
+    result.exitCode !== undefined && result.exitCode !== null
+      ? `exit ${String(result.exitCode)}`
+      : '',
+    result.stderrTail
+      ? `stderr: ${normalizeWrappedMessage(result.stderrTail)}`
+      : '',
+    result.stdoutTail
+      ? `stdout: ${normalizeWrappedMessage(result.stdoutTail)}`
+      : '',
+  ].filter(Boolean);
+  if (details.length === 0) {
+    return lines;
+  }
+  lines.push(
+    formatHarnessDiagnostic('fail', details.join(' · '), style, {
+      columns: options.columns,
+      task: options.task,
+    }),
+  );
+  return lines;
+}
+
+function formatHarnessNote(
+  message: string,
+  style: ChalkStyle,
+  options: {columns?: number; task?: HarnessTaskContext} = {},
+): string {
+  const prefix = options.task ? HARNESS_NOTE_PREFIX : HARNESS_TOP_NOTE_PREFIX;
+  const continuation = options.task
+    ? ' '.repeat(HARNESS_NOTE_PREFIX.length)
+    : ' '.repeat(HARNESS_TOP_NOTE_PREFIX.length);
+  return formatHarnessWrappedLine(style.dim(prefix), message, style, options, {
+    continuationPrefix: style.dim(continuation),
+  });
+}
+
+function formatHarnessDiagnostic(
+  label: 'fail' | 'tool',
+  message: string,
+  style: ChalkStyle,
+  options: {columns?: number; task?: HarnessTaskContext} = {},
+): string {
+  const indent = options.task ? '    ' : '  ';
+  const styledLabel = label === 'fail' ? style.red(label) : style.dim(label);
+  const plainPrefix = `${indent}${label.padEnd(
+    HARNESS_DIAGNOSTIC_LABEL_WIDTH,
+  )} `;
+  const styledPrefix = `${indent}${styledLabel}${' '.repeat(
+    Math.max(HARNESS_DIAGNOSTIC_LABEL_WIDTH - label.length, 0),
+  )} `;
+  return formatHarnessWrappedLine(styledPrefix, message, style, options, {
+    continuationPrefix: ' '.repeat(plainPrefix.length),
+  });
+}
+
+function formatHarnessWrappedLine(
+  prefix: string,
+  message: string,
+  style: ChalkStyle,
+  options: {columns?: number} = {},
+  wrapOptions: {continuationPrefix?: string} = {},
+): string {
+  const plainPrefix = stripAnsi(prefix);
+  const continuationPrefix =
+    wrapOptions.continuationPrefix ?? ' '.repeat(plainPrefix.length);
+  const columns = harnessEffectiveColumns(options.columns);
+  const messageWidth = Math.max(
+    columns - plainLength(plainPrefix),
+    HARNESS_MIN_MESSAGE_WIDTH,
+  );
+  const lines = wrapHarnessMessage(message, messageWidth);
+  const visibleLines = lines.length > 0 ? lines : [''];
+  return visibleLines
+    .map((line, index) => {
+      const linePrefix = index === 0 ? prefix : continuationPrefix;
+      return `${linePrefix}${line ? style.dim(line) : ''}`.trimEnd();
+    })
+    .join('\n');
+}
+
+function appendTokenSummary(message: string, tokenSummary?: string): string {
+  return tokenSummary ? `${message} · ${tokenSummary}` : message;
+}
+
+function harnessEffectiveColumns(columns: number | undefined): number {
+  const terminalColumns =
+    typeof columns === 'number' && columns > 0
+      ? Math.floor(columns)
+      : HARNESS_FALLBACK_WIDTH;
+  return Math.max(60, Math.min(terminalColumns, HARNESS_MAX_WIDTH));
+}
+
+function colorHarnessGlyph(glyph: string, style: ChalkStyle): string {
+  if (glyph === '✓') {
+    return style.green(glyph);
+  }
+  if (glyph === '✗') {
+    return style.red(glyph);
+  }
+  if (glyph === '!') {
+    return style.yellow(glyph);
+  }
+  if (glyph === '↻' || glyph === '▶' || glyph === '●') {
+    return style.cyan(glyph);
+  }
+  return style.dim(glyph);
+}
+
+function threadedStatusGlyph(
+  status: HarnessProgressResult['status'],
+): '✓' | '✗' | '!' {
+  if (status === 'success') {
+    return '✓';
+  }
+  if (status === 'blocked') {
+    return '!';
+  }
+  return '✗';
+}
+
+function threadedStepScope(step: HarnessProgressStep): string {
+  return middleTruncate(stepName(step), HARNESS_STEP_NAME_WIDTH);
+}
+
+function threadedActor(step: HarnessProgressStep): string {
+  return isCommandStep(step) ? 'command' : step.label;
 }
 
 export function formatTimelineEvent(
@@ -1109,20 +1330,6 @@ function formatHarnessJsonlEvent(
       : undefined,
     type,
   };
-}
-
-function formatHarnessStartLine(
-  task: HarnessTaskContext,
-  style: ChalkStyle,
-): string {
-  const parts = [
-    style.bold(taskLabel(task)),
-    style.dim(retryLabel(task)),
-    task.summary ? style.white(task.summary) : '',
-  ].filter(Boolean);
-  return parts.length > 0
-    ? `${style.dim('▸')} ${parts.join('  ')}`
-    : style.dim('▸');
 }
 
 function formatHarnessCompletionLine(
@@ -1909,8 +2116,23 @@ function formatHarnessOutputSummary(result: unknown): string | undefined {
     )
     .find(title => title.length > 0);
   const count = tasks.length;
-  const title = firstTitle ? `: ${compact(firstTitle, 80)}` : '';
+  const title = firstTitle ? `: ${firstTitle}` : '';
   return `${count} task${count === 1 ? '' : 's'}${title}`;
+}
+
+function normalizeWrappedMessage(
+  message: string | undefined,
+): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+
+  const normalized = message
+    .split(/\r?\n/)
+    .map(line => line.trim().replace(/\s+/g, ' '))
+    .join('\n')
+    .trim();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function looksLikeAgentOutput(message: string | undefined): boolean {
@@ -2103,6 +2325,19 @@ export function formatTokenUsageSummary(
     .join(' · ')}`;
 }
 
+function formatHarnessCompactTokenSummary(
+  tokenUsage: RunMetadata['tokenUsage'],
+): string | undefined {
+  if (!tokenUsage) {
+    return undefined;
+  }
+
+  const total = formatTokenValue(tokenUsage.totalTokens, true);
+  return total
+    ? `tokens ${total}`
+    : formatTokenUsageSummary(tokenUsage, {compact: true});
+}
+
 function formatChangedFiles(
   files: ChangedFileSummary[],
   style: ChalkStyle,
@@ -2202,6 +2437,77 @@ function compact(value: string, maxLength: number): string {
   }
 
   return `${oneLine.slice(0, maxLength - 3)}...`;
+}
+
+function middleTruncate(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  if (maxLength <= 3) {
+    return value.slice(0, maxLength);
+  }
+
+  const remaining = maxLength - 3;
+  const startLength = Math.ceil(remaining / 2);
+  const endLength = Math.floor(remaining / 2);
+  return `${value.slice(0, startLength)}...${value.slice(-endLength)}`;
+}
+
+function wrapHarnessMessage(value: string, width: number): string[] {
+  const normalized = normalizeWrappedMessage(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (const paragraph of normalized.split('\n')) {
+    if (paragraph.length === 0) {
+      lines.push('');
+      continue;
+    }
+    lines.push(...wrapParagraph(paragraph, width));
+  }
+  return lines;
+}
+
+function wrapParagraph(value: string, width: number): string[] {
+  if (width < HARNESS_MIN_MESSAGE_WIDTH) {
+    return [compact(value, Math.max(width, 1))];
+  }
+
+  const words = value.split(' ');
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    if (word.length > width) {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+      for (let index = 0; index < word.length; index += width) {
+        lines.push(word.slice(index, index + width));
+      }
+      continue;
+    }
+
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= width) {
+      current = next;
+      continue;
+    }
+
+    if (current) {
+      lines.push(current);
+    }
+    current = word;
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+
+  return lines;
 }
 
 function previewText(

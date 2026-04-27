@@ -10,6 +10,10 @@ repeatable, inspectable, and repairable from local files.
 This repo's `.agentq/` directory is intended to be the project-local example of
 that approach.
 
+For copyable agent examples, model routing, artifact contracts, and
+skill-boundary guidance, use the repo-local AgentQ skill under
+`skills/agentq/references/`.
+
 ## Design Principle
 
 Keep each layer boring:
@@ -102,7 +106,7 @@ steps:
 
 The YAML field is `retries` because it configures the number of extra attempts
 after the first try. Human output should describe the current attempt as
-`try N/M`.
+`retry N/M`.
 
 ## AgentOutput Contract
 

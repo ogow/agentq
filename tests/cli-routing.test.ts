@@ -154,6 +154,59 @@ steps:
     }
   });
 
+  test('routes default harness progress to stderr and final summary to stdout', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-cli-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+steps:
+  - id: build
+    command: ["bun", "-e", "console.log('ok')"]
+`,
+    );
+    const restoreCwd = useCwd(projectCwd);
+    const stdoutCapture = captureStdout();
+    const stderrCapture = captureStderr();
+
+    try {
+      process.exitCode = 0;
+      await expect(
+        buildCli(['harness', 'run', 'work', '--no-color']).parseAsync(),
+      ).resolves.toBeDefined();
+
+      const stdout = stdoutCapture.chunks.join('');
+      const stderr = stderrCapture.chunks.join('');
+      const stdoutLines = stdout
+        .trim()
+        .split('\n')
+        .filter(line => line.length > 0);
+      const stderrLines = stderr
+        .trim()
+        .split('\n')
+        .filter(line => line.length > 0);
+
+      expect(stderrLines).toEqual(['✓ task 1/1 success retry 1/1  work']);
+      expect(stdoutLines).toHaveLength(5);
+      expect(stdoutLines[0]).toMatch(/^work-[^:\n]+: success$/);
+      expect(stdoutLines[1]).toBe('tasks: 1 succeeded');
+      expect(stdoutLines[2]).toBe('tries: 1 total');
+      expect(stdoutLines[3]).toMatch(/^duration: .+/);
+      expect(stdoutLines[4]).toMatch(/^run: .+\/work-[^/\n]+$/);
+      expect(stderr).not.toContain('tasks: 1 succeeded');
+      expect(stdout).not.toContain('command:');
+      expect(stdout).not.toContain('stdout: ok');
+    } finally {
+      stderrCapture.restoreStderr();
+      stdoutCapture.restoreStdout();
+      process.exitCode = 0;
+      restoreCwd();
+      restoreHome();
+    }
+  });
+
   test('routes harness -v output to verbose stderr lines', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-cli-'));
     const restoreHome = useHome(root);
@@ -185,11 +238,16 @@ steps:
         .filter(line => line.length > 0);
 
       expect(stdout).toMatch(/^work-[^:\n]+: success/m);
+      expect(stdout).toContain('tasks: 1 succeeded');
       expect(lines[0]).toMatch(/^[^\s]+$/);
-      expect(stderr).toContain('▸ task 1/1  retry 1/1  work');
-      expect(stderr).toContain('▸ build');
-      expect(stderr).toContain('✓ build');
-      expect(stderr).toContain('Check build passed.');
+      expect(lines).toEqual([
+        lines[0],
+        '▶ task 1/1  retry 1/1  work',
+        '  ● build  command',
+        '  ✓ build  passed',
+        '✓ task 1/1  retry 1/1  work',
+      ]);
+      expect(stderr).not.toContain('{"status":');
     } finally {
       stderrCapture.restoreStderr();
       stdoutCapture.restoreStdout();
@@ -227,12 +285,17 @@ steps:
 
       expect(process.exitCode ?? 0).toBe(1);
       expect(stdout).toMatch(/^work-[^:\n]+: failed/m);
-      expect(stderr).toContain('▸ task 1/1  retry 1/1  work');
+      expect(stdout).toContain('reason: Check build failed.');
+      expect(stderr).toContain('▶ task 1/1  retry 1/1  work');
       expect(stderr).toContain(
-        "command: bun -e console.log('noise'); console.error('boom'); process.exit(1)",
+        "    tool  exec: bun -e console.log('noise'); console.error('boom'); process.exit(1)",
       );
-      expect(stderr).toContain('stderr: boom');
-      expect(stderr).toContain('stdout: noise');
+      expect(stderr).toContain(
+        '    fail  exit 1 · stderr: boom · stdout: noise',
+      );
+      expect(stderr).toContain(
+        '✗ task 1/1  retry 1/1  failed: Check build failed.',
+      );
       expect(stderr).not.toContain('agent work --:-- message');
     } finally {
       stderrCapture.restoreStderr();

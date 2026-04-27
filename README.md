@@ -94,15 +94,15 @@ bun run agentq run example --task "summarize this repo"
 
 When the run finishes, AgentQ prints a compact summary with status, duration, tool usage, changed files, the run directory, and the final response.
 
-Use `--details` for full artifact paths and metadata. Use `-v` for step/task structure, repeat `-v` as `-vv` for execution diagnostics, and add `--jsonl` when you want the same event stream as machine-readable lines. The same verbosity rules apply to both agent runs and harness runs.
+Use `--details` for full artifact paths and metadata. Use `-v` for a wrapped threaded task and step timeline, repeat `-v` as `-vv` for execution diagnostics in the same layout, and add `--jsonl` when you want the same event stream as machine-readable lines. The same verbosity rules apply to both agent runs and harness runs.
 
 Harness output modes are split by audience:
 
 | Mode | Use |
 | --- | --- |
 | default | One live TTY row plus compact task completions and final summary. |
-| `-v` | Structured task/step timeline with concise trace lines. |
-| `-vv` | Detailed diagnostics, including tool and command activity. |
+| `-v` | Threaded task/step timeline with agent ownership, traces, and retries. |
+| `-vv` | The same threaded timeline plus tool and command diagnostics. |
 | `--jsonl` | Machine-readable events for scripts and `jq`. |
 
 Examples:
@@ -204,9 +204,22 @@ tasks.json
 
 `log.jsonl` records harness starts, retries, check results, and pointers to nested agent run directories. Agent stdout, stderr, raw JSONL, final answers, and agent-created artifacts stay in the agent run folders under `~/.agentq/runs`. `tasks.json` is the current harness state.
 
-Default harness output stays bounded: on a TTY it keeps one live status row for the active task, and on non-TTY output it prints a compact history of completed tasks plus concise failure context. Use `-v` for a structured task/step timeline, `-vv` for tool calls and diagnostics, and `--jsonl` to stream the same event model as machine-readable lines.
+Default harness output stays bounded: on a TTY it keeps one live status row for the active task, and on non-TTY output it prints a compact history of completed tasks plus concise failure context. Use `-v` for a threaded task/step timeline, `-vv` for the same timeline plus tool and command diagnostics, and `--jsonl` to stream the same event model as machine-readable lines.
 
-Final human summaries stay line-oriented and include aggregate token usage when nested agent runs report it:
+Verbose harness rows use a nested checklist with wrapped notes:
+
+```text
+devloop-a0d2b5
+▶ task 1/3  retry 1/2  tighten retry reporting
+  ● build  harness-builder
+    … checking the current render behavior and retry wording before changing
+      the renderer contract
+  ✗ build  failed: check failed
+✗ task 1/3  retry 1/2  failed: check failed
+↻ task 1/3  retry 2/2  retrying with previous feedback
+```
+
+Verbose success rows keep token usage compact as `· tokens <total>`, while final human summaries stay line-oriented and include aggregate token usage when nested agent runs report it:
 
 ```text
 devloop-a0d2b5  success
@@ -258,4 +271,20 @@ Check code quality:
 
 ```sh
 bun run check
+```
+
+## Output Contract Smoke Test
+
+Run the focused contract suite:
+
+```sh
+bun test tests/agent.test.ts tests/harness.test.ts tests/cli-routing.test.ts tests/render.test.ts
+bun run check
+```
+
+Human and JSONL smoke commands:
+
+```sh
+bun run agentq harness run dev --input-text "No-op output contract smoke test" -v
+bun run agentq harness run dev --input-text "No-op output contract smoke test" --jsonl | jq .
 ```

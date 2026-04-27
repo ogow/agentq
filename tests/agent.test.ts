@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {mkdir, writeFile} from 'node:fs/promises';
+import {mkdir, readdir, readFile, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {mkdtempSync} from 'node:fs';
@@ -271,6 +271,93 @@ missing anchors
     } finally {
       restoreHome();
     }
+  });
+
+  test('project-local agents keep explicit output contracts', async () => {
+    const projectRoot = process.cwd();
+    const agentsDir = join(projectRoot, '.agentq', 'agents');
+    const harnessesDir = join(projectRoot, '.agentq', 'harnesses');
+    const agentFiles = (await readdir(agentsDir))
+      .filter(file => file.endsWith('.md'))
+      .sort();
+
+    expect(agentFiles.length).toBeGreaterThan(0);
+
+    const harnessOwnedAgents = new Set([
+      'harness-builder',
+      'harness-reviewer',
+      'task-splitter',
+    ]);
+    const requiredAgentOutputFields = [
+      '"status"',
+      '"summary"',
+      '"failureKind"',
+      '"result"',
+      '"feedback"',
+      '"artifacts"',
+    ];
+
+    for (const file of agentFiles) {
+      const filePath = join(agentsDir, file);
+      const markdown = await readFile(filePath, 'utf8');
+      const agent = await readAgentFile(filePath, 'project');
+      const prompt = renderAgentPrompt(
+        agent,
+        'inspect the current task',
+        '/tmp/agentq-run/artifacts',
+        agent.frontmatter.resultMode,
+      );
+
+      for (const key of [
+        'provider',
+        'model',
+        'reasoning',
+        'result_mode',
+        'sandbox',
+        'timeout',
+      ]) {
+        expect(markdown).toMatch(new RegExp(`^${key}:\\s+.+$`, 'm'));
+      }
+
+      expect(agent.frontmatter.provider).toBe('codex');
+      expect(agent.frontmatter.model.length).toBeGreaterThan(0);
+      expect(agent.frontmatter.reasoning.length).toBeGreaterThan(0);
+      expect(agent.frontmatter.resultMode).toBe('json');
+      expect(agent.frontmatter.timeout.length).toBeGreaterThan(0);
+
+      expect(prompt).toContain('AgentQ result mode:\njson');
+      expect(prompt).toContain('Final output must be valid JSON only');
+
+      if (harnessOwnedAgents.has(agent.id)) {
+        for (const field of requiredAgentOutputFields) {
+          expect(prompt).toContain(field);
+        }
+      }
+    }
+
+    const harnessFiles = (await readdir(harnessesDir))
+      .filter(file => file.endsWith('.yaml'))
+      .sort();
+    const harnessDefinitions = await Promise.all(
+      harnessFiles.map(async file => ({
+        file,
+        yaml: await readFile(join(harnessesDir, file), 'utf8'),
+      })),
+    );
+
+    expect(
+      harnessDefinitions.some(({yaml}) =>
+        /\bagent:\s+agent-improver\b/.test(yaml),
+      ),
+    ).toBe(false);
+    expect(
+      harnessDefinitions.some(
+        ({yaml}) =>
+          /\bagent:\s+harness-builder\b/.test(yaml) ||
+          /\bagent:\s+harness-reviewer\b/.test(yaml) ||
+          /\bagent:\s+task-splitter\b/.test(yaml),
+      ),
+    ).toBe(true);
   });
 });
 

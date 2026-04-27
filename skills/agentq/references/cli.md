@@ -155,7 +155,7 @@ run        ~/.agentq/harness-runs/devloop-a0d2b5
 ```
 
 `loop.retries` is still the YAML field for the retry budget. Human output may
-describe the current attempt as `try N/M`.
+describe the current attempt as `retry N/M`.
 
 ## Run Artifacts
 
