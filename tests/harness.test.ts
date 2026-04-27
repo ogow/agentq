@@ -257,6 +257,83 @@ inputs:
     }
   });
 
+  test('passes previous attempt feedback and artifacts to legacy retries', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd);
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+agent: builder
+retries: 1
+inputs:
+  task: string
+`,
+    );
+
+    const calls: Array<{agent: string; task: string}> = [];
+    const provider = recordingProvider(
+      [
+        agentOutput(
+          'failed',
+          'Repair the disabled runtime assertion.',
+          null,
+          'check',
+          [
+            {
+              description: 'Focused test log',
+              kind: 'log',
+              name: 'console-log',
+              path: '/tmp/attempt-1/console.log',
+            },
+          ],
+        ),
+        agentOutput('success', 'Recovered.'),
+      ],
+      calls,
+    );
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        inputText: 'fix disabled runtime',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+      const state = JSON.parse(
+        await readFile(join(result.runDir, 'tasks.json'), 'utf8'),
+      ) as {
+        attempts: Array<{
+          artifacts?: Array<{path: string}>;
+          feedback?: {problem?: string} | null;
+          status: string;
+        }>;
+      };
+      const secondTask = JSON.parse(calls[1].task) as {
+        artifacts?: Array<{path: string}>;
+        feedback?: {problem?: string} | null;
+      };
+
+      expect(result.status).toBe('success');
+      expect(state.attempts[0].feedback?.problem).toBe(
+        'Repair the disabled runtime assertion.',
+      );
+      expect(state.attempts[0].artifacts?.[0]?.path).toBe(
+        '/tmp/attempt-1/console.log',
+      );
+      expect(secondTask.feedback?.problem).toBe(
+        'Repair the disabled runtime assertion.',
+      );
+      expect(secondTask.artifacts?.[0]?.path).toBe(
+        '/tmp/attempt-1/console.log',
+      );
+    } finally {
+      restoreHome();
+    }
+  });
+
   test('keeps failed agent context in non-tty failure blocks', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
     const restoreHome = useHome(root);
@@ -556,6 +633,126 @@ steps:
       expect(Object.keys(state.stepResults)).toContain('split');
       expect(secondBuildTask.loopItem?.title).toBe('first');
       expect(secondBuildTask.feedback?.problem).toBe('Build failed.');
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('includes prior step artifacts in structured step context', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd, 'builder');
+    await writeAgent(projectCwd, 'judge');
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+steps:
+  - id: build
+    agent: builder
+  - id: judge
+    agent: judge
+`,
+    );
+
+    const calls: Array<{agent: string; task: string}> = [];
+    const provider = recordingProvider(
+      [
+        agentOutput(
+          'success',
+          'Built.',
+          {changedFiles: ['src/app.ts']},
+          undefined,
+          [
+            {
+              description: 'Builder notes',
+              kind: 'file',
+              name: 'notes',
+              path: '/tmp/build/artifacts/notes.md',
+            },
+          ],
+        ),
+        agentOutput('success', 'Judged.'),
+      ],
+      calls,
+    );
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        inputText: 'build and judge',
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+      const judgeTask = JSON.parse(calls[1].task) as {
+        steps?: Record<string, {artifacts?: Array<{path: string}>}>;
+      };
+
+      expect(result.status).toBe('success');
+      expect(judgeTask.steps?.build.artifacts?.[0]?.path).toBe(
+        '/tmp/build/artifacts/notes.md',
+      );
+    } finally {
+      restoreHome();
+    }
+  });
+
+  test('keeps loop retry artifacts scoped to the current item', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentq-harness-'));
+    const restoreHome = useHome(root);
+    const projectCwd = join(root, 'project');
+    await writeAgent(projectCwd, 'splitter');
+    await writeAgent(projectCwd, 'builder');
+    await writeHarness(
+      projectCwd,
+      'work',
+      `name: work
+steps:
+  - id: split
+    agent: splitter
+  - id: implement
+    loop:
+      over: "{{split.tasks}}"
+      retries: 1
+      steps:
+        - id: build
+          agent: builder
+`,
+    );
+
+    const calls: Array<{agent: string; task: string}> = [];
+    const provider = recordingProvider(
+      [
+        agentOutput('success', 'Split.', {
+          tasks: [{title: 'first'}, {title: 'second'}],
+        }),
+        agentOutput('failed', 'First failed.', null, 'check', [
+          {
+            kind: 'log',
+            name: 'first-log',
+            path: '/tmp/first.log',
+          },
+        ]),
+        agentOutput('success', 'First recovered.'),
+        agentOutput('success', 'Second built.'),
+      ],
+      calls,
+    );
+
+    try {
+      const {result} = await runHarnessWithOutput({
+        name: 'work',
+        projectCwd,
+        provider,
+      });
+      const builderTasks = calls
+        .filter(call => call.agent === 'builder')
+        .map(call => JSON.parse(call.task) as {artifacts?: Array<unknown>});
+
+      expect(result.status).toBe('success');
+      expect(builderTasks[1].artifacts).toHaveLength(1);
+      expect(builderTasks[2].artifacts).toEqual([]);
     } finally {
       restoreHome();
     }
@@ -1128,9 +1325,15 @@ function agentOutput(
   summary: string,
   result: unknown = null,
   failureKind?: string,
+  artifacts: Array<{
+    description?: string;
+    kind: string;
+    name: string;
+    path: string;
+  }> = [],
 ): string {
   return `${JSON.stringify({
-    artifacts: [],
+    artifacts,
     failureKind,
     feedback: status === 'success' ? null : {problem: summary},
     result,

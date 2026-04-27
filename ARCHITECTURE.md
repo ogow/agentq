@@ -59,7 +59,7 @@ Run files store process metadata so later commands can discover candidate work:
 
 `agentq harness` sits above `runAgent` and keeps orchestration intentionally small. The legacy harness shape runs one agent, then optional command checks. Failed agent runs or failed checks retry the same agent while retries remain.
 
-The structured harness shape adds explicit steps and a retryable loop. Steps before the loop run once and establish stable context, such as a task split. Steps inside the loop form one repairable attempt and retry together. Agent feedback informs the next loop attempt, but the harness owns routing, retry limits, and terminal status.
+The structured harness shape adds explicit steps and a retryable loop. Steps before the loop run once and establish stable context, such as a task split. Steps inside the loop form one repairable attempt and retry together. Agent feedback and relevant artifact refs inform the next loop attempt, but the harness owns routing, retry limits, and terminal status.
 
 Harness definitions resolve only from `./.agentq/harnesses/<name>.yaml` before `~/.agentq/harnesses/<name>.yaml`.
 
@@ -110,7 +110,7 @@ Harness command and check steps have a default `10m` timeout. Harness authors ca
 
 Harness runs accept `--input-text` for literal input and `--input-file` for files or stdin. JSON objects become structured inputs; other content becomes `inputs.task`.
 
-Harnessed agent attempts call `runAgent`, override the effective result mode to `json`, and parse the final output as `AgentOutput`: `status`, `summary`, optional `result`, optional `feedback`, and optional `artifacts`.
+Harnessed agent attempts call `runAgent`, override the effective result mode to `json`, and parse the final output as `AgentOutput`: `status`, `summary`, optional `result`, optional `feedback`, and optional `artifacts`. Top-level `feedback` and `artifacts` are the handoff fields for retries and later steps.
 
 Harness run directories keep only two harness-owned files:
 

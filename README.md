@@ -192,7 +192,7 @@ steps:
           agent: harness-reviewer
 ```
 
-Loop agents receive the original inputs, prior step results, the current loop item, the attempt number, and previous feedback. A step failure with `failureKind: "plan"` stops the loop instead of retrying the same task.
+Loop agents receive the original inputs, prior step results, the current loop item, the attempt number, previous feedback, and relevant artifact refs from the previous failed attempt. A step failure with `failureKind: "plan"` stops the loop instead of retrying the same task.
 Harness command and check steps default to a `10m` timeout; set `timeout` on the step for longer-running checks.
 
 Each new harness run keeps only the harness-owned records:

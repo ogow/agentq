@@ -134,8 +134,8 @@ Field guidance:
 | `summary` | One short human-readable sentence. |
 | `failureKind` | Use `implementation`, `check`, `review`, `plan`, `blocked`, or `environment`. |
 | `result` | Include useful machine-readable facts such as changed files and verification. |
-| `feedback` | Use when another attempt needs a repair instruction. |
-| `artifacts` | Point to agent-created files under the run artifact directory. |
+| `feedback` | Use top-level feedback when another attempt needs a repair instruction. |
+| `artifacts` | Point to agent-created files under the run artifact directory; top-level artifact refs are forwarded to retries and later steps. |
 
 Do not include `nextTask`, `nextAgent`, routing, or retry policy. The harness
 owns those decisions.

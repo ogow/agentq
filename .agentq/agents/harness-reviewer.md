@@ -92,6 +92,10 @@ Final answer must be valid JSON only:
 Use `success` when no blocking correctness issue remains.
 Use `failed` with `failureKind: "review"` when the implementation should be
 repaired by another loop attempt.
+For `failed` or `blocked`, set top-level `feedback` to a concise repair or
+unblock instruction with `problem` and optional `cause`, `evidence`, or `fix`.
+Put handoff-critical evidence refs in top-level `artifacts` when a path is
+useful for the next attempt.
 Use `failed` with `failureKind: "plan"` when the assigned loop item is wrong and
 retrying it unchanged would waste work.
 Use `blocked` only when required evidence, files, permissions, credentials, or a

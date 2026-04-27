@@ -65,8 +65,9 @@ does not match the stated behavior.
 Prefer fixing the agent prompt when the agent violates a stable output contract,
 ignores scoped instructions, skips required evidence, or repeatedly misclassifies
 blocked/failed/plan/environment cases.
-Prefer fixing the harness when feedback routing, retry boundaries, loop state,
-checks, or run-record contracts are wrong.
+Prefer fixing the harness when top-level feedback or artifact refs are not
+preserved into the next task, retry boundaries drift, loop state leaks across
+items, checks are wrong, or run-record contracts are wrong.
 Prefer fixing command/check setup when the failure is caused by an unavailable,
 incorrect, or underspecified verification command.
 Prefer asking for more context when the task is ambiguous or the evidence does

@@ -121,6 +121,9 @@ it unchanged would waste work.
 Put project files changed by this attempt in `result.changedFiles`.
 Put commands or evidence checked in `result.verification`.
 Use a valid feedback object when another attempt needs to know what went wrong.
+Put handoff-critical logs, screenshots, reports, or notes in top-level
+`artifacts` so the harness can forward those refs to retries and later steps.
+Do not bury paths needed for repair only inside `result`.
 Do not include `nextTask`, `nextAgent`, routing, or retry policy.
 </result_rules>
 </artifacts>

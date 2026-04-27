@@ -150,6 +150,7 @@ export interface HarnessRunResult {
 export interface HarnessAttemptRecord {
   agentRunDir?: string;
   attempt: number;
+  artifacts?: ArtifactRef[];
   checks: HarnessCheckResult[];
   failedStep?: HarnessProgressStep;
   failureKind?: FailureKind;
@@ -661,6 +662,7 @@ async function runLoopStep(options: {
     options.progress.startTask(task);
     let itemSucceeded = false;
     let lastStepResult: StepResult | undefined;
+    let itemArtifacts: ArtifactRef[] = [];
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       task.attempt = attempt;
@@ -684,6 +686,7 @@ async function runLoopStep(options: {
       let attemptStatus: HarnessStepStatus = 'success';
       let attemptSummary = '';
       let attemptFeedback: AgentFeedback | null = feedback;
+      let attemptArtifacts: ArtifactRef[] = itemArtifacts;
       let attemptFailureKind: FailureKind | undefined;
       let lastAgentRunDir: string | undefined;
       let retryable = true;
@@ -694,6 +697,7 @@ async function runLoopStep(options: {
         const stepResult = await runDefinedStep({
           attempt,
           definition: options.definition,
+          artifacts: attemptArtifacts,
           feedback: attemptFeedback,
           interruptState: options.interruptState,
           loopItem,
@@ -715,7 +719,12 @@ async function runLoopStep(options: {
 
         attemptSummary = stepResult.summary;
         attemptFeedback = stepResult.feedback;
+        attemptArtifacts = stepResult.artifacts;
         attemptFailureKind = stepResult.failureKind;
+        attemptRecord.artifacts = [
+          ...(attemptRecord.artifacts ?? []),
+          ...stepResult.artifacts,
+        ];
         artifacts.push(...stepResult.artifacts);
         if (stepResult.runDir) {
           lastAgentRunDir = stepResult.runDir;
@@ -766,6 +775,7 @@ async function runLoopStep(options: {
       status = attemptStatus;
       summary = attemptSummary;
       feedback = attemptFeedback;
+      itemArtifacts = attemptRecord.artifacts ?? [];
       if (attemptStatus === 'blocked' || !retryable) {
         break;
       }
@@ -808,6 +818,7 @@ async function runLoopStep(options: {
 
 async function runDefinedStep(options: {
   attempt: number;
+  artifacts?: ArtifactRef[];
   definition: HarnessDefinition;
   feedback: AgentFeedback | null;
   interruptState: {interrupted: boolean};
@@ -824,6 +835,7 @@ async function runDefinedStep(options: {
   return options.step.kind === 'agent'
     ? runAgentStep({
         agent: options.step.agent,
+        artifacts: options.artifacts ?? [],
         attempt: options.attempt,
         feedback: options.feedback,
         interruptState: options.interruptState,
@@ -853,6 +865,7 @@ async function runDefinedStep(options: {
 
 async function runAgentStep(options: {
   agent: string;
+  artifacts: ArtifactRef[];
   attempt: number;
   feedback: AgentFeedback | null;
   interruptState: {interrupted: boolean};
@@ -899,6 +912,7 @@ async function runAgentStep(options: {
         },
         task: taskFromStepContext({
           attempt: options.attempt,
+          artifacts: options.artifacts,
           feedback: options.feedback,
           inputs: options.state.inputs,
           loopItem: options.loopItem,
@@ -1460,7 +1474,12 @@ async function runHarnessAttempt(options: {
           runId: basename(options.paths.runDir),
           stepId,
         },
-        task: taskFromInputs(options.state.inputs, options.attempt),
+        task: taskFromInputs(
+          options.state.inputs,
+          options.attempt,
+          options.state.attempts.at(-1)?.feedback ?? null,
+          options.state.attempts.at(-1)?.artifacts ?? [],
+        ),
         logLevel: options.request.logLevel,
         verbosity: options.request.verbosity,
         verbose: options.request.verbose,
@@ -1575,6 +1594,7 @@ async function runHarnessAttempt(options: {
   return {
     agentRunDir,
     attempt: options.attempt,
+    artifacts: agentOutput?.artifacts ?? [],
     checks,
     failedStep,
     failureKind: agentOutput?.failureKind,
@@ -1952,12 +1972,15 @@ function validateHarnessInputs(
 function taskFromInputs(
   inputs: Record<string, unknown>,
   attempt: number,
+  feedback: AgentFeedback | null = null,
+  artifacts: ArtifactRef[] = [],
 ): string {
-  return JSON.stringify({attempt, inputs}, null, 2);
+  return JSON.stringify({artifacts, attempt, feedback, inputs}, null, 2);
 }
 
 function taskFromStepContext(options: {
   attempt: number;
+  artifacts: ArtifactRef[];
   feedback: AgentFeedback | null;
   inputs: Record<string, unknown>;
   loopItem: unknown;
@@ -1966,6 +1989,7 @@ function taskFromStepContext(options: {
   const steps: Record<string, unknown> = {};
   for (const [id, result] of Object.entries(options.stepResults)) {
     steps[id] = {
+      artifacts: result.artifacts,
       feedback: result.feedback,
       result: result.result,
       status: result.status,
@@ -1975,6 +1999,7 @@ function taskFromStepContext(options: {
   return JSON.stringify(
     {
       attempt: options.attempt,
+      artifacts: options.artifacts,
       feedback: options.feedback,
       inputs: options.inputs,
       loopItem: options.loopItem,
