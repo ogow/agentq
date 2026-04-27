@@ -327,6 +327,9 @@ missing anchors
 
       expect(prompt).toContain('AgentQ result mode:\njson');
       expect(prompt).toContain('Final output must be valid JSON only');
+      expect(markdown).not.toMatch(
+        /^(Goal|Repository context|Skill and reference use|Evidence|Diagnosis rules|Proposal rules|Verification|Constraints|Rules|Feedback schema):$/m,
+      );
 
       if (harnessOwnedAgents.has(agent.id)) {
         for (const field of requiredAgentOutputFields) {
